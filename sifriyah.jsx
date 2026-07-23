@@ -164,6 +164,47 @@ function nuvemOuvir(firebaseConfig, docId, onChange) {
   return () => {}; // desinscrever simplificado
 }
 
+function nomeCompleto(p) {
+  if (!p) return "";
+  return `${p.nome || ""}${p.sobrenome ? " " + p.sobrenome : ""}`.trim();
+}
+function separarNome(nomeFull) {
+  const partes = (nomeFull || "").trim().split(/\s+/);
+  if (partes.length <= 1) return { nome: partes[0] || "", sobrenome: "" };
+  return { nome: partes.slice(0, -1).join(" "), sobrenome: partes[partes.length - 1] };
+}
+
+// migra dados salvos no formato antigo (contatos como dicionário, sem páginas/nuvem etc.)
+function migrarDados(parsed) {
+  const livros = (parsed.livros || []).map((l) => ({
+    paginas: null,
+    dataAquisicao: null,
+    ...l,
+  }));
+
+  let pessoas = parsed.pessoas;
+  if (!pessoas) {
+    const contatos = parsed.contatos || {};
+    const nomesUnicos = new Set([
+      ...Object.keys(contatos),
+      ...((parsed.emprestimos || []).map((e) => e.pessoa).filter(Boolean)),
+    ]);
+    pessoas = Array.from(nomesUnicos).map((nomeFull) => {
+      const { nome, sobrenome } = separarNome(nomeFull);
+      const c = contatos[nomeFull] || {};
+      return { id: uid(), nome, sobrenome, telefone: c.telefone || "", email: c.email || "" };
+    });
+  }
+
+  return {
+    livros,
+    emprestimos: parsed.emprestimos || [],
+    pessoas,
+    cobrancas: parsed.cobrancas || [],
+    config: parsed.config || { pix: "", recebedor: "" },
+  };
+}
+
 function normalizaTelefone(tel) {
   const digits = (tel || "").replace(/\D/g, "");
   if (!digits) return "";
@@ -312,7 +353,8 @@ export default function App() {
   const [tab, setTab] = useState("emprestimos");
   const [livros, setLivros] = useState([]);
   const [emprestimos, setEmprestimos] = useState([]);
-  const [contatos, setContatos] = useState({}); // { nome: {telefone, email} }
+  const [pessoas, setPessoas] = useState([]); // [{id, nome, sobrenome, telefone, email}]
+  const [cobrancas, setCobrancas] = useState([]); // [{id, emprestimoId, tipo, data}]
   const [config, setConfig] = useState({ pix: "", recebedor: "" });
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -375,11 +417,13 @@ export default function App() {
       if (!blob || blob === ultimoBlobRef.current) return; // veio da própria gravação, ignora
       try {
         const parsed = await decryptJSON(blob, senhaAtual);
+        const m = migrarDados(parsed);
         ultimoBlobRef.current = blob;
-        setLivros(parsed.livros || []);
-        setEmprestimos(parsed.emprestimos || []);
-        setContatos(parsed.contatos || {});
-        setConfig(parsed.config || { pix: "", recebedor: "" });
+        setLivros(m.livros);
+        setEmprestimos(m.emprestimos);
+        setPessoas(m.pessoas);
+        setCobrancas(m.cobrancas);
+        setConfig(m.config);
       } catch (e) {
         // outro aparelho pode ter mandado com senha diferente; ignora silenciosamente
       }
@@ -395,11 +439,13 @@ export default function App() {
     }
     try {
       const parsed = await decryptJSON(blob, senha);
+      const m = migrarDados(parsed);
       ultimoBlobRef.current = blob;
-      setLivros(parsed.livros || []);
-      setEmprestimos(parsed.emprestimos || []);
-      setContatos(parsed.contatos || {});
-      setConfig(parsed.config || { pix: "", recebedor: "" });
+      setLivros(m.livros);
+      setEmprestimos(m.emprestimos);
+      setPessoas(m.pessoas);
+      setCobrancas(m.cobrancas);
+      setConfig(m.config);
       setSenhaAtual(senha);
       setUnlocked(true);
       return { ok: true };
@@ -417,7 +463,8 @@ export default function App() {
     await backendSet("");
     setLivros([]);
     setEmprestimos([]);
-    setContatos({});
+    setPessoas([]);
+    setCobrancas([]);
     setConfig({ pix: "", recebedor: "" });
     setSenhaAtual("");
     setUnlocked(false);
@@ -429,7 +476,7 @@ export default function App() {
     setSaving(true);
     const t = setTimeout(async () => {
       try {
-        const criptografado = await encryptJSON({ livros, emprestimos, contatos, config }, senhaAtual);
+        const criptografado = await encryptJSON({ livros, emprestimos, pessoas, cobrancas, config }, senhaAtual);
         await backendSet(criptografado);
         setTemDadosSalvos(true);
         setCloudStatus(cloudConfig ? "sincronizada" : "desligada");
@@ -440,15 +487,16 @@ export default function App() {
       setSaving(false);
     }, 400);
     return () => clearTimeout(t);
-  }, [livros, emprestimos, contatos, config, loaded, unlocked, senhaAtual]);
-
-  const pessoasConhecidas = useMemo(() => {
-    const nomes = new Set([...emprestimos.map((e) => e.pessoa), ...Object.keys(contatos)]);
-    return Array.from(nomes).filter(Boolean).sort();
-  }, [emprestimos, contatos]);
+  }, [livros, emprestimos, pessoas, cobrancas, config, loaded, unlocked, senhaAtual]);
 
   function livroById(id) {
     return livros.find((l) => l.id === id);
+  }
+  function pessoaById(id) {
+    return pessoas.find((p) => p.id === id);
+  }
+  function pessoaPorNomeCompleto(nomeFull) {
+    return pessoas.find((p) => nomeCompleto(p).toLowerCase() === (nomeFull || "").trim().toLowerCase());
   }
 
   function statusOf(emp) {
@@ -461,10 +509,35 @@ export default function App() {
     return (emp.pagamentos || []).reduce((s, p) => s + p.valor, 0);
   }
 
-  // ---- Ações ----
-  function addLivro(titulo, autor) {
-    if (!titulo.trim()) return;
-    setLivros((prev) => [...prev, { id: uid(), titulo: titulo.trim(), autor: autor.trim() }]);
+  // ---- Ações: Livros ----
+  function addLivro(dados) {
+    if (!dados.titulo.trim()) return;
+    setLivros((prev) => [
+      ...prev,
+      {
+        id: uid(),
+        titulo: dados.titulo.trim(),
+        autor: (dados.autor || "").trim(),
+        paginas: dados.paginas ? parseInt(dados.paginas, 10) : null,
+        dataAquisicao: dados.dataAquisicao || null,
+      },
+    ]);
+  }
+
+  function editarLivro(id, dados) {
+    setLivros((prev) =>
+      prev.map((l) =>
+        l.id === id
+          ? {
+              ...l,
+              titulo: dados.titulo.trim(),
+              autor: (dados.autor || "").trim(),
+              paginas: dados.paginas ? parseInt(dados.paginas, 10) : null,
+              dataAquisicao: dados.dataAquisicao || null,
+            }
+          : l
+      )
+    );
   }
 
   function removeLivro(id) {
@@ -475,12 +548,43 @@ export default function App() {
     setLivros((prev) => prev.filter((l) => l.id !== id));
   }
 
+  // ---- Ações: Pessoas ----
+  function upsertPessoa(dados, id) {
+    setPessoas((prev) => {
+      if (id) return prev.map((p) => (p.id === id ? { ...p, ...dados } : p));
+      // evita duplicar se já existe alguém com o mesmo nome completo
+      const existente = prev.find(
+        (p) => nomeCompleto(p).toLowerCase() === nomeCompleto(dados).toLowerCase()
+      );
+      if (existente) return prev.map((p) => (p.id === existente.id ? { ...p, ...dados } : p));
+      return [...prev, { id: uid(), nome: "", sobrenome: "", telefone: "", email: "", ...dados }];
+    });
+  }
+  function removePessoa(id) {
+    setPessoas((prev) => prev.filter((p) => p.id !== id));
+  }
+
+  // ---- Ações: Empréstimos ----
   function addEmprestimo(data) {
+    let pessoaId = data.pessoaId;
+    if (!pessoaId && data.pessoaNovaNome) {
+      pessoaId = uid();
+      setPessoas((prev) => [
+        ...prev,
+        {
+          id: pessoaId,
+          nome: data.pessoaNovaNome.trim(),
+          sobrenome: (data.pessoaNovaSobrenome || "").trim(),
+          telefone: data.telefone || "",
+          email: "",
+        },
+      ]);
+    }
     setEmprestimos((prev) => [
       {
         id: uid(),
         livroId: data.livroId,
-        pessoa: data.pessoa.trim(),
+        pessoaId,
         dataEmprestimo: todayISO(),
         prazo: data.prazo || null,
         valorCombinado: parseFloat(data.valorCombinado) || 0,
@@ -490,9 +594,6 @@ export default function App() {
       },
       ...prev,
     ]);
-    if (data.telefone || data.email) {
-      setContato(data.pessoa.trim(), { telefone: data.telefone, email: data.email });
-    }
   }
 
   function marcarDevolvido(id) {
@@ -517,20 +618,9 @@ export default function App() {
     setEmprestimos((prev) => prev.filter((e) => e.id !== id));
   }
 
-  function setContato(nome, dados) {
-    if (!nome) return;
-    setContatos((prev) => ({
-      ...prev,
-      [nome]: { ...(prev[nome] || {}), ...dados },
-    }));
-  }
-
-  function removeContato(nome) {
-    setContatos((prev) => {
-      const cp = { ...prev };
-      delete cp[nome];
-      return cp;
-    });
+  // ---- Ações: Cobranças (fica registrado sempre que uma cobrança/lembrete é enviado) ----
+  function registrarCobranca(emprestimoId, tipo, valor) {
+    setCobrancas((prev) => [{ id: uid(), emprestimoId, tipo, valor: valor || 0, data: todayISO() }, ...prev]);
   }
 
   if (!loaded) {
@@ -636,6 +726,7 @@ export default function App() {
           { id: "emprestimos", label: "Empréstimos" },
           { id: "acervo", label: "Acervo" },
           { id: "pessoas", label: "Pessoas" },
+          { id: "financeiro", label: "Financeiro" },
           { id: "ajustes", label: "Ajustes" },
         ].map((t) => (
           <button
@@ -667,8 +758,8 @@ export default function App() {
           <EmprestimosTab
             livros={livros}
             emprestimos={emprestimos}
-            contatos={contatos}
-            pessoasConhecidas={pessoasConhecidas}
+            pessoas={pessoas}
+            pessoaById={pessoaById}
             statusOf={statusOf}
             totalPago={totalPago}
             livroById={livroById}
@@ -677,20 +768,29 @@ export default function App() {
             onDevolver={marcarDevolvido}
             onPagar={addPagamento}
             onRemover={removeEmprestimo}
+            onRegistrarCobranca={registrarCobranca}
           />
         )}
         {tab === "acervo" && (
-          <AcervoTab livros={livros} emprestimos={emprestimos} onAdd={addLivro} onRemove={removeLivro} />
+          <AcervoTab livros={livros} emprestimos={emprestimos} onAdd={addLivro} onEdit={editarLivro} onRemove={removeLivro} />
         )}
         {tab === "pessoas" && (
           <PessoasTab
-            pessoas={pessoasConhecidas}
-            contatos={contatos}
+            pessoas={pessoas}
             emprestimos={emprestimos}
             livroById={livroById}
             totalPago={totalPago}
-            onSetContato={setContato}
-            onRemoveContato={removeContato}
+            onUpsert={upsertPessoa}
+            onRemove={removePessoa}
+          />
+        )}
+        {tab === "financeiro" && (
+          <FinanceiroTab
+            emprestimos={emprestimos}
+            cobrancas={cobrancas}
+            pessoaById={pessoaById}
+            livroById={livroById}
+            totalPago={totalPago}
           />
         )}
         {tab === "ajustes" && (
@@ -712,8 +812,8 @@ export default function App() {
 function EmprestimosTab({
   livros,
   emprestimos,
-  contatos,
-  pessoasConhecidas,
+  pessoas,
+  pessoaById,
   statusOf,
   totalPago,
   livroById,
@@ -722,11 +822,14 @@ function EmprestimosTab({
   onDevolver,
   onPagar,
   onRemover,
+  onRegistrarCobranca,
 }) {
   const [showForm, setShowForm] = useState(false);
   const [livroId, setLivroId] = useState("");
-  const [pessoa, setPessoa] = useState("");
-  const [telefone, setTelefone] = useState("");
+  const [pessoaId, setPessoaId] = useState("");
+  const [nomeNovo, setNomeNovo] = useState("");
+  const [sobrenomeNovo, setSobrenomeNovo] = useState("");
+  const [telefoneNovo, setTelefoneNovo] = useState("");
   const [valorCombinado, setValorCombinado] = useState("");
   const [prazo, setPrazo] = useState("");
   const [filtro, setFiltro] = useState("ativos");
@@ -737,22 +840,32 @@ function EmprestimosTab({
   );
 
   function submit() {
-    if (!livroId || !pessoa.trim()) {
-      alert("Escolha um livro e informe o nome de quem está pegando.");
+    if (!livroId || (!pessoaId && !nomeNovo.trim())) {
+      alert("Escolha um livro e quem está pegando.");
       return;
     }
-    onAdd({ livroId, pessoa, valorCombinado, prazo, telefone });
+    onAdd({
+      livroId,
+      pessoaId: pessoaId || null,
+      pessoaNovaNome: pessoaId ? null : nomeNovo,
+      pessoaNovaSobrenome: pessoaId ? null : sobrenomeNovo,
+      telefone: telefoneNovo,
+      valorCombinado,
+      prazo,
+    });
     setLivroId("");
-    setPessoa("");
-    setTelefone("");
+    setPessoaId("");
+    setNomeNovo("");
+    setSobrenomeNovo("");
+    setTelefoneNovo("");
     setValorCombinado("");
     setPrazo("");
     setShowForm(false);
   }
 
-  function mensagemCobranca(emp, livro) {
+  function mensagemCobranca(emp, livro, pessoa) {
     const restante = Math.max(0, (emp.valorCombinado || 0) - totalPago(emp));
-    let msg = `Oi ${emp.pessoa}! 👋 Passando pra lembrar sobre o livro "${
+    let msg = `Oi ${pessoa ? pessoa.nome : ""}! 👋 Passando pra lembrar sobre o livro "${
       livro ? livro.titulo : ""
     }" que peguei emprestado com você — falta ${fmtMoney(restante)} do combinado.`;
     if (config.pix) {
@@ -762,8 +875,8 @@ function EmprestimosTab({
     return msg;
   }
 
-  function mensagemRenovacao(emp, livro) {
-    return `Oi ${emp.pessoa}! 👋 Só passando pra saber sobre o livro "${
+  function mensagemRenovacao(emp, livro, pessoa) {
+    return `Oi ${pessoa ? pessoa.nome : ""}! 👋 Só passando pra saber sobre o livro "${
       livro ? livro.titulo : ""
     }" — o prazo era ${fmtDate(emp.prazo)}. Você já terminou ou quer renovar por mais um tempo? Me avisa 🙂`;
   }
@@ -835,28 +948,31 @@ function EmprestimosTab({
             )}
 
             <label style={labelStyle}>Quem está pegando</label>
-            <Input
-              list="pessoas-lista"
-              value={pessoa}
-              onChange={(e) => {
-                setPessoa(e.target.value);
-                const c = contatos[e.target.value];
-                if (c && c.telefone) setTelefone(c.telefone);
-              }}
-              placeholder="Nome da pessoa"
-            />
-            <datalist id="pessoas-lista">
-              {pessoasConhecidas.map((p) => (
-                <option key={p} value={p} />
+            <select
+              value={pessoaId}
+              onChange={(e) => setPessoaId(e.target.value)}
+              style={inputBase}
+            >
+              <option value="">+ Pessoa nova…</option>
+              {pessoas.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {nomeCompleto(p)}
+                </option>
               ))}
-            </datalist>
+            </select>
 
-            <label style={labelStyle}>Celular (com DDD) — pra poder cobrar depois</label>
-            <Input
-              value={telefone}
-              onChange={(e) => setTelefone(e.target.value)}
-              placeholder="(11) 91234-5678"
-            />
+            {!pessoaId && (
+              <div style={{ display: "flex", gap: 8 }}>
+                <Input placeholder="Nome" value={nomeNovo} onChange={(e) => setNomeNovo(e.target.value)} />
+                <Input placeholder="Sobrenome" value={sobrenomeNovo} onChange={(e) => setSobrenomeNovo(e.target.value)} />
+              </div>
+            )}
+            {!pessoaId && (
+              <>
+                <label style={labelStyle}>Celular (com DDD) — pra poder cobrar depois</label>
+                <Input value={telefoneNovo} onChange={(e) => setTelefoneNovo(e.target.value)} placeholder="(11) 91234-5678" />
+              </>
+            )}
 
             <div style={{ display: "flex", gap: 10 }}>
               <div style={{ flex: 1 }}>
@@ -889,9 +1005,9 @@ function EmprestimosTab({
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           {lista.map((emp) => {
             const livro = livroById(emp.livroId);
+            const pessoa = pessoaById(emp.pessoaId);
             const pago = totalPago(emp);
             const restante = Math.max(0, (emp.valorCombinado || 0) - pago);
-            const contato = contatos[emp.pessoa] || {};
             return (
               <div
                 key={emp.id}
@@ -910,7 +1026,7 @@ function EmprestimosTab({
                     {livro ? livro.titulo : "(livro removido)"}
                   </div>
                   <div style={{ fontSize: 13, color: COLORS.inkSoft, marginBottom: 6 }}>
-                    com {emp.pessoa} · desde {fmtDate(emp.dataEmprestimo)}
+                    com {pessoa ? nomeCompleto(pessoa) : "(pessoa removida)"} · desde {fmtDate(emp.dataEmprestimo)}
                     {emp.prazo ? ` · prazo ${fmtDate(emp.prazo)}` : ""}
                   </div>
 
@@ -955,21 +1071,34 @@ function EmprestimosTab({
                         </Button>
                       </div>
 
-                      {contato.telefone ? (
+                      {pessoa && pessoa.telefone ? (
                         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                           {restante > 0 && (
-                            <a href={linkWhatsApp(contato.telefone, mensagemCobranca(emp, livro))} target="_blank" rel="noreferrer">
+                            <a
+                              href={linkWhatsApp(pessoa.telefone, mensagemCobranca(emp, livro, pessoa))}
+                              target="_blank"
+                              rel="noreferrer"
+                              onClick={() => onRegistrarCobranca(emp.id, "cobranca", restante)}
+                            >
                               <Button variant="whats" style={{ padding: "7px 12px", fontSize: 13 }}>
                                 💬 Cobrar via WhatsApp
                               </Button>
                             </a>
                           )}
-                          <a href={linkWhatsApp(contato.telefone, mensagemRenovacao(emp, livro))} target="_blank" rel="noreferrer">
+                          <a
+                            href={linkWhatsApp(pessoa.telefone, mensagemRenovacao(emp, livro, pessoa))}
+                            target="_blank"
+                            rel="noreferrer"
+                            onClick={() => onRegistrarCobranca(emp.id, "lembrete", 0)}
+                          >
                             <Button variant="subtle" style={{ padding: "7px 12px", fontSize: 13 }}>
                               💬 Lembrar prazo
                             </Button>
                           </a>
-                          <a href={linkSMS(contato.telefone, mensagemCobranca(emp, livro))}>
+                          <a
+                            href={linkSMS(pessoa.telefone, mensagemCobranca(emp, livro, pessoa))}
+                            onClick={() => onRegistrarCobranca(emp.id, "sms", restante)}
+                          >
                             <Button variant="subtle" style={{ padding: "7px 12px", fontSize: 13 }}>
                               ✉️ SMS
                             </Button>
@@ -977,7 +1106,7 @@ function EmprestimosTab({
                         </div>
                       ) : (
                         <div style={{ fontSize: 12, color: COLORS.inkSoft }}>
-                          Cadastre o celular de {emp.pessoa} na aba Pessoas pra poder cobrar por WhatsApp.
+                          Cadastre o celular {pessoa ? "de " + pessoa.nome : "dessa pessoa"} na aba Pessoas pra poder cobrar por WhatsApp.
                         </div>
                       )}
                     </>
@@ -1012,23 +1141,72 @@ function EmprestimosTab({
 }
 
 // ---------------- Acervo ----------------
-function AcervoTab({ livros, emprestimos, onAdd, onRemove }) {
+function AcervoTab({ livros, emprestimos, onAdd, onEdit, onRemove }) {
   const [titulo, setTitulo] = useState("");
   const [autor, setAutor] = useState("");
+  const [paginas, setPaginas] = useState("");
+  const [dataAquisicao, setDataAquisicao] = useState("");
+  const [editandoId, setEditandoId] = useState(null);
+  const [editTitulo, setEditTitulo] = useState("");
+  const [editAutor, setEditAutor] = useState("");
+  const [editPaginas, setEditPaginas] = useState("");
+  const [editData, setEditData] = useState("");
+
+  function abrirEdicao(l) {
+    setEditandoId(l.id);
+    setEditTitulo(l.titulo);
+    setEditAutor(l.autor || "");
+    setEditPaginas(l.paginas || "");
+    setEditData(l.dataAquisicao || "");
+  }
+  function salvarEdicao() {
+    onEdit(editandoId, { titulo: editTitulo, autor: editAutor, paginas: editPaginas, dataAquisicao: editData });
+    setEditandoId(null);
+  }
 
   return (
     <Section eyebrow="Catálogo" title="Acervo">
-      <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
-        <Input placeholder="Título" value={titulo} onChange={(e) => setTitulo(e.target.value)} style={{ flex: "2 1 160px" }} />
-        <Input placeholder="Autor (opcional)" value={autor} onChange={(e) => setAutor(e.target.value)} style={{ flex: "2 1 140px" }} />
+      <div
+        style={{
+          background: COLORS.card,
+          border: `1.5px solid ${COLORS.rule}`,
+          borderRadius: 10,
+          padding: 16,
+          marginBottom: 20,
+          display: "flex",
+          flexDirection: "column",
+          gap: 8,
+        }}
+      >
+        <label style={labelStyle}>Cadastrar livro</label>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <Input placeholder="Título" value={titulo} onChange={(e) => setTitulo(e.target.value)} style={{ flex: "2 1 160px" }} />
+          <Input placeholder="Autor (opcional)" value={autor} onChange={(e) => setAutor(e.target.value)} style={{ flex: "2 1 140px" }} />
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <Input
+            type="number"
+            placeholder="Páginas"
+            value={paginas}
+            onChange={(e) => setPaginas(e.target.value)}
+            style={{ flex: "1 1 110px" }}
+          />
+          <div style={{ flex: "1 1 160px" }}>
+            <label style={{ ...labelStyle, marginBottom: 2, display: "block" }}>Dia de aquisição</label>
+            <Input type="date" value={dataAquisicao} onChange={(e) => setDataAquisicao(e.target.value)} />
+          </div>
+        </div>
         <Button
+          style={{ alignSelf: "flex-start" }}
           onClick={() => {
-            onAdd(titulo, autor);
+            onAdd({ titulo, autor, paginas, dataAquisicao });
             setTitulo("");
             setAutor("");
+            setPaginas("");
+            setDataAquisicao("");
           }}
         >
-          Adicionar
+          Adicionar ao acervo
         </Button>
       </div>
 
@@ -1037,6 +1215,7 @@ function AcervoTab({ livros, emprestimos, onAdd, onRemove }) {
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {livros.map((l) => {
           const emprestado = emprestimos.some((e) => e.livroId === l.id && !e.devolvido);
+          const editando = editandoId === l.id;
           return (
             <div
               key={l.id}
@@ -1045,35 +1224,67 @@ function AcervoTab({ livros, emprestimos, onAdd, onRemove }) {
                 border: `1.5px solid ${COLORS.rule}`,
                 borderRadius: 8,
                 padding: "12px 14px",
-                display: "flex",
-                alignItems: "center",
-                gap: 10,
               }}
             >
-              <div style={{ flex: 1 }}>
-                <div style={{ fontFamily: "'Playfair Display', serif", fontWeight: 600, fontSize: 16 }}>{l.titulo}</div>
-                {l.autor && <div style={{ fontSize: 13, color: COLORS.inkSoft }}>{l.autor}</div>}
-              </div>
-              <span
-                style={{
-                  fontFamily: "'JetBrains Mono', monospace",
-                  fontSize: 10.5,
-                  letterSpacing: 0.5,
-                  padding: "4px 8px",
-                  borderRadius: 12,
-                  color: emprestado ? COLORS.burgundy : COLORS.sage,
-                  border: `1px solid ${emprestado ? COLORS.burgundy : COLORS.sage}`,
-                }}
-              >
-                {emprestado ? "FORA" : "NA PRATELEIRA"}
-              </span>
-              <button
-                onClick={() => onRemove(l.id)}
-                style={{ background: "none", border: "none", color: COLORS.rust, cursor: "pointer", fontSize: 18, lineHeight: 1 }}
-                title="Remover"
-              >
-                ×
-              </button>
+              {editando ? (
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <Input value={editTitulo} onChange={(e) => setEditTitulo(e.target.value)} style={{ flex: "2 1 140px" }} placeholder="Título" />
+                    <Input value={editAutor} onChange={(e) => setEditAutor(e.target.value)} style={{ flex: "2 1 120px" }} placeholder="Autor" />
+                  </div>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <Input type="number" value={editPaginas} onChange={(e) => setEditPaginas(e.target.value)} style={{ flex: "1 1 100px" }} placeholder="Páginas" />
+                    <Input type="date" value={editData} onChange={(e) => setEditData(e.target.value)} style={{ flex: "1 1 140px" }} />
+                  </div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <Button style={{ padding: "7px 12px", fontSize: 13 }} onClick={salvarEdicao}>
+                      Salvar
+                    </Button>
+                    <Button variant="ghost" style={{ padding: "7px 12px", fontSize: 13 }} onClick={() => setEditandoId(null)}>
+                      Cancelar
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontFamily: "'Playfair Display', serif", fontWeight: 600, fontSize: 16 }}>{l.titulo}</div>
+                    {l.autor && <div style={{ fontSize: 13, color: COLORS.inkSoft }}>{l.autor}</div>}
+                    <div style={{ fontSize: 11.5, color: COLORS.inkSoft, fontFamily: "'JetBrains Mono', monospace", marginTop: 2 }}>
+                      {l.paginas ? `${l.paginas} páginas` : ""}
+                      {l.paginas && l.dataAquisicao ? " · " : ""}
+                      {l.dataAquisicao ? `adquirido em ${fmtDate(l.dataAquisicao)}` : ""}
+                    </div>
+                  </div>
+                  <span
+                    style={{
+                      fontFamily: "'JetBrains Mono', monospace",
+                      fontSize: 10.5,
+                      letterSpacing: 0.5,
+                      padding: "4px 8px",
+                      borderRadius: 12,
+                      color: emprestado ? COLORS.burgundy : COLORS.sage,
+                      border: `1px solid ${emprestado ? COLORS.burgundy : COLORS.sage}`,
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {emprestado ? "FORA" : "NA PRATELEIRA"}
+                  </span>
+                  <button
+                    onClick={() => abrirEdicao(l)}
+                    style={{ background: "none", border: "none", color: COLORS.burgundy, cursor: "pointer", fontSize: 13, textDecoration: "underline" }}
+                  >
+                    editar
+                  </button>
+                  <button
+                    onClick={() => onRemove(l.id)}
+                    style={{ background: "none", border: "none", color: COLORS.rust, cursor: "pointer", fontSize: 18, lineHeight: 1 }}
+                    title="Remover"
+                  >
+                    ×
+                  </button>
+                </div>
+              )}
             </div>
           );
         })}
@@ -1083,31 +1294,36 @@ function AcervoTab({ livros, emprestimos, onAdd, onRemove }) {
 }
 
 // ---------------- Pessoas ----------------
-function PessoasTab({ pessoas, contatos, emprestimos, livroById, totalPago, onSetContato, onRemoveContato }) {
+function PessoasTab({ pessoas, emprestimos, livroById, totalPago, onUpsert, onRemove }) {
   const [novoNome, setNovoNome] = useState("");
+  const [novoSobrenome, setNovoSobrenome] = useState("");
   const [novoTel, setNovoTel] = useState("");
   const [novoEmail, setNovoEmail] = useState("");
-  const [editando, setEditando] = useState(null);
+  const [editandoId, setEditandoId] = useState(null);
+  const [editNome, setEditNome] = useState("");
+  const [editSobrenome, setEditSobrenome] = useState("");
   const [editTel, setEditTel] = useState("");
   const [editEmail, setEditEmail] = useState("");
 
-  const resumo = pessoas.map((nome) => {
-    const dela = emprestimos.filter((e) => e.pessoa === nome);
+  const resumo = pessoas.map((p) => {
+    const dela = emprestimos.filter((e) => e.pessoaId === p.id);
     const combinado = dela.reduce((s, e) => s + (e.valorCombinado || 0), 0);
     const pago = dela.reduce((s, e) => s + totalPago(e), 0);
     const ativos = dela.filter((e) => !e.devolvido);
-    return { nome, combinado, pago, saldo: combinado - pago, ativos, contato: contatos[nome] || {} };
+    return { pessoa: p, combinado, pago, saldo: combinado - pago, ativos };
   });
 
-  function abrirEdicao(nome) {
-    setEditando(nome);
-    setEditTel(contatos[nome]?.telefone || "");
-    setEditEmail(contatos[nome]?.email || "");
+  function abrirEdicao(p) {
+    setEditandoId(p.id);
+    setEditNome(p.nome);
+    setEditSobrenome(p.sobrenome || "");
+    setEditTel(p.telefone || "");
+    setEditEmail(p.email || "");
   }
 
-  function salvarEdicao(nome) {
-    onSetContato(nome, { telefone: editTel, email: editEmail });
-    setEditando(null);
+  function salvarEdicao() {
+    onUpsert({ nome: editNome, sobrenome: editSobrenome, telefone: editTel, email: editEmail }, editandoId);
+    setEditandoId(null);
   }
 
   return (
@@ -1126,7 +1342,10 @@ function PessoasTab({ pessoas, contatos, emprestimos, livroById, totalPago, onSe
       >
         <label style={labelStyle}>Cadastrar pessoa</label>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <Input placeholder="Nome" value={novoNome} onChange={(e) => setNovoNome(e.target.value)} style={{ flex: "2 1 140px" }} />
+          <Input placeholder="Nome" value={novoNome} onChange={(e) => setNovoNome(e.target.value)} style={{ flex: "1 1 120px" }} />
+          <Input placeholder="Sobrenome" value={novoSobrenome} onChange={(e) => setNovoSobrenome(e.target.value)} style={{ flex: "1 1 120px" }} />
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <Input placeholder="Celular com DDD" value={novoTel} onChange={(e) => setNovoTel(e.target.value)} style={{ flex: "1 1 140px" }} />
           <Input placeholder="E-mail (opcional)" value={novoEmail} onChange={(e) => setNovoEmail(e.target.value)} style={{ flex: "1 1 140px" }} />
         </div>
@@ -1134,64 +1353,79 @@ function PessoasTab({ pessoas, contatos, emprestimos, livroById, totalPago, onSe
           style={{ alignSelf: "flex-start" }}
           onClick={() => {
             if (!novoNome.trim()) return;
-            onSetContato(novoNome.trim(), { telefone: novoTel, email: novoEmail });
+            onUpsert({ nome: novoNome.trim(), sobrenome: novoSobrenome.trim(), telefone: novoTel, email: novoEmail });
             setNovoNome("");
+            setNovoSobrenome("");
             setNovoTel("");
             setNovoEmail("");
           }}
         >
-          Salvar contato
+          Salvar pessoa
         </Button>
       </div>
 
       {resumo.length === 0 && <EmptyState text="Ninguém cadastrado ainda." />}
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        {resumo.map((p) => (
-          <div key={p.nome} style={{ background: COLORS.card, border: `1.5px solid ${COLORS.rule}`, borderRadius: 10, padding: 16 }}>
+        {resumo.map(({ pessoa: p, combinado, pago, saldo, ativos }) => (
+          <div key={p.id} style={{ background: COLORS.card, border: `1.5px solid ${COLORS.rule}`, borderRadius: 10, padding: 16 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-              <div style={{ fontFamily: "'Playfair Display', serif", fontWeight: 700, fontSize: 17 }}>{p.nome}</div>
-              {p.saldo !== 0 && (
+              <div style={{ fontFamily: "'Playfair Display', serif", fontWeight: 700, fontSize: 17 }}>{nomeCompleto(p)}</div>
+              {saldo !== 0 && (
                 <div
                   style={{
                     fontFamily: "'JetBrains Mono', monospace",
                     fontSize: 13,
-                    color: p.saldo > 0 ? COLORS.rust : COLORS.sage,
+                    color: saldo > 0 ? COLORS.rust : COLORS.sage,
                     fontWeight: 600,
                   }}
                 >
-                  {p.saldo > 0 ? `deve ${fmtMoney(p.saldo)}` : "em dia"}
+                  {saldo > 0 ? `deve ${fmtMoney(saldo)}` : "em dia"}
                 </div>
               )}
             </div>
-            <div style={{ fontSize: 12, color: COLORS.inkSoft, marginTop: 2 }}>{p.ativos.length} livro(s) com ela agora</div>
-            {p.ativos.length > 0 && (
+            <div style={{ fontSize: 12, color: COLORS.inkSoft, marginTop: 2 }}>{ativos.length} livro(s) com ela agora</div>
+            {ativos.length > 0 && (
               <ul style={{ margin: "8px 0 0", paddingLeft: 18, fontSize: 13.5 }}>
-                {p.ativos.map((e) => {
+                {ativos.map((e) => {
                   const l = livroById(e.livroId);
                   return <li key={e.id}>{l ? l.titulo : "(livro removido)"}</li>;
                 })}
               </ul>
             )}
 
-            {editando === p.nome ? (
-              <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <Input placeholder="Celular" value={editTel} onChange={(e) => setEditTel(e.target.value)} style={{ flex: "1 1 130px", padding: "7px 10px", fontSize: 13 }} />
-                <Input placeholder="E-mail" value={editEmail} onChange={(e) => setEditEmail(e.target.value)} style={{ flex: "1 1 130px", padding: "7px 10px", fontSize: 13 }} />
-                <Button style={{ padding: "7px 12px", fontSize: 13 }} onClick={() => salvarEdicao(p.nome)}>
-                  Salvar
-                </Button>
-                <Button variant="ghost" style={{ padding: "7px 12px", fontSize: 13 }} onClick={() => setEditando(null)}>
-                  Cancelar
-                </Button>
+            {editandoId === p.id ? (
+              <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <Input placeholder="Nome" value={editNome} onChange={(e) => setEditNome(e.target.value)} style={{ flex: "1 1 120px", padding: "7px 10px", fontSize: 13 }} />
+                  <Input placeholder="Sobrenome" value={editSobrenome} onChange={(e) => setEditSobrenome(e.target.value)} style={{ flex: "1 1 120px", padding: "7px 10px", fontSize: 13 }} />
+                </div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <Input placeholder="Celular" value={editTel} onChange={(e) => setEditTel(e.target.value)} style={{ flex: "1 1 130px", padding: "7px 10px", fontSize: 13 }} />
+                  <Input placeholder="E-mail" value={editEmail} onChange={(e) => setEditEmail(e.target.value)} style={{ flex: "1 1 130px", padding: "7px 10px", fontSize: 13 }} />
+                </div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <Button style={{ padding: "7px 12px", fontSize: 13 }} onClick={salvarEdicao}>
+                    Salvar
+                  </Button>
+                  <Button variant="ghost" style={{ padding: "7px 12px", fontSize: 13 }} onClick={() => setEditandoId(null)}>
+                    Cancelar
+                  </Button>
+                  <button
+                    onClick={() => onRemove(p.id)}
+                    style={{ marginLeft: "auto", background: "none", border: "none", color: COLORS.rust, fontSize: 12.5, cursor: "pointer", textDecoration: "underline" }}
+                  >
+                    remover pessoa
+                  </button>
+                </div>
               </div>
             ) : (
               <div style={{ marginTop: 10, display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
                 <span style={{ fontSize: 13, color: COLORS.inkSoft, fontFamily: "'JetBrains Mono', monospace" }}>
-                  {p.contato.telefone ? p.contato.telefone : "sem celular"}
-                  {p.contato.email ? ` · ${p.contato.email}` : ""}
+                  {p.telefone ? p.telefone : "sem celular"}
+                  {p.email ? ` · ${p.email}` : ""}
                 </span>
                 <button
-                  onClick={() => abrirEdicao(p.nome)}
+                  onClick={() => abrirEdicao(p)}
                   style={{ background: "none", border: "none", color: COLORS.burgundy, cursor: "pointer", fontSize: 13, textDecoration: "underline" }}
                 >
                   editar contato
@@ -1202,6 +1436,124 @@ function PessoasTab({ pessoas, contatos, emprestimos, livroById, totalPago, onSe
         ))}
       </div>
     </Section>
+  );
+}
+
+// ---------------- Financeiro ----------------
+function FinanceiroTab({ emprestimos, cobrancas, pessoaById, livroById, totalPago }) {
+  const totalCombinado = emprestimos.reduce((s, e) => s + (e.valorCombinado || 0), 0);
+  const totalRecebido = emprestimos.reduce((s, e) => s + totalPago(e), 0);
+  const totalPendente = Math.max(0, totalCombinado - totalRecebido);
+
+  const pagamentos = emprestimos
+    .flatMap((e) => (e.pagamentos || []).map((p) => ({ ...p, emprestimo: e })))
+    .sort((a, b) => (a.data < b.data ? 1 : -1));
+
+  const cobrancasOrdenadas = [...cobrancas].sort((a, b) => (a.data < b.data ? 1 : -1));
+
+  const rotuloTipo = { cobranca: "cobrança enviada", lembrete: "lembrete de prazo", sms: "cobrança por SMS" };
+
+  return (
+    <div>
+      <Section eyebrow="Caixa" title="Financeiro">
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 24 }}>
+          {[
+            { label: "combinado (todos)", valor: totalCombinado, cor: COLORS.ink },
+            { label: "recebido", valor: totalRecebido, cor: COLORS.sage },
+            { label: "pendente", valor: totalPendente, cor: COLORS.rust },
+          ].map((c) => (
+            <div
+              key={c.label}
+              style={{
+                flex: "1 1 140px",
+                background: COLORS.card,
+                border: `1.5px solid ${COLORS.rule}`,
+                borderRadius: 10,
+                padding: "14px 16px",
+              }}
+            >
+              <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, color: COLORS.inkSoft, fontFamily: "'JetBrains Mono', monospace" }}>
+                {c.label}
+              </div>
+              <div style={{ fontFamily: "'Playfair Display', serif", fontWeight: 700, fontSize: 20, color: c.cor }}>
+                {fmtMoney(c.valor)}
+              </div>
+            </div>
+          ))}
+        </div>
+      </Section>
+
+      <Section eyebrow="Histórico" title="Pagamentos recebidos">
+        {pagamentos.length === 0 && <EmptyState text="Nenhum pagamento registrado ainda." />}
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          {pagamentos.map((p, i) => {
+            const pessoa = pessoaById(p.emprestimo.pessoaId);
+            const livro = livroById(p.emprestimo.livroId);
+            return (
+              <div
+                key={i}
+                style={{
+                  background: COLORS.card,
+                  border: `1px solid ${COLORS.rule}`,
+                  borderRadius: 8,
+                  padding: "10px 14px",
+                  display: "flex",
+                  justifyContent: "space-between",
+                  fontSize: 13.5,
+                  gap: 10,
+                }}
+              >
+                <div>
+                  <b>{pessoa ? nomeCompleto(pessoa) : "(pessoa removida)"}</b> · {livro ? livro.titulo : "(livro removido)"}
+                  <div style={{ fontSize: 11.5, color: COLORS.inkSoft }}>{fmtDate(p.data)}</div>
+                </div>
+                <div style={{ fontFamily: "'JetBrains Mono', monospace", color: COLORS.sage, fontWeight: 600 }}>
+                  +{fmtMoney(p.valor)}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </Section>
+
+      <Section eyebrow="Histórico" title="Cobranças enviadas">
+        {cobrancasOrdenadas.length === 0 && <EmptyState text="Nenhuma cobrança enviada ainda." />}
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          {cobrancasOrdenadas.map((c) => {
+            const emp = emprestimos.find((e) => e.id === c.emprestimoId);
+            const pessoa = emp ? pessoaById(emp.pessoaId) : null;
+            const livro = emp ? livroById(emp.livroId) : null;
+            return (
+              <div
+                key={c.id}
+                style={{
+                  background: COLORS.card,
+                  border: `1px solid ${COLORS.rule}`,
+                  borderRadius: 8,
+                  padding: "10px 14px",
+                  display: "flex",
+                  justifyContent: "space-between",
+                  fontSize: 13.5,
+                  gap: 10,
+                }}
+              >
+                <div>
+                  <b>{pessoa ? nomeCompleto(pessoa) : "(pessoa removida)"}</b> · {livro ? livro.titulo : "(livro removido)"}
+                  <div style={{ fontSize: 11.5, color: COLORS.inkSoft }}>
+                    {rotuloTipo[c.tipo] || c.tipo} · {fmtDate(c.data)}
+                  </div>
+                </div>
+                {c.valor > 0 && (
+                  <div style={{ fontFamily: "'JetBrains Mono', monospace", color: COLORS.gold, fontWeight: 600 }}>
+                    {fmtMoney(c.valor)}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </Section>
+    </div>
   );
 }
 
