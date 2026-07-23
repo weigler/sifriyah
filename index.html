@@ -245,7 +245,9 @@ function migrarDados(parsed) {
     valorSemanal: null,
     limiteSemanas: null,
     categoria: "",
+    tags: [],
     ...l,
+    tags: l.tags || [],
   }));
 
   let pessoas = parsed.pessoas;
@@ -262,11 +264,22 @@ function migrarDados(parsed) {
     });
   }
 
+  // categorias/tags já cadastradas nos livros entram automaticamente na lista, mesmo em dados antigos
+  const categoriasDosLivros = livros.map((l) => l.categoria).filter(Boolean);
+  const tagsDosLivros = livros.flatMap((l) => l.tags || []);
+  const categorias = Array.from(new Set([...(parsed.categorias || []), ...categoriasDosLivros]));
+  const tags = Array.from(new Set([...(parsed.tags || []), ...tagsDosLivros]));
+
   return {
     livros,
-    emprestimos: parsed.emprestimos || [],
+    emprestimos: (parsed.emprestimos || []).map((e) => ({
+      ...e,
+      pagamentos: (e.pagamentos || []).map((p) => ({ id: p.id || uid(), ...p })),
+    })),
     pessoas,
     cobrancas: parsed.cobrancas || [],
+    categorias,
+    tags,
     config: {
       pix: "",
       recebedor: "",
@@ -383,6 +396,44 @@ function Input(props) {
   );
 }
 
+// Botão de excluir com confirmação leve (sem usar confirm() nativo do navegador).
+// Primeiro clique pede confirmação por alguns segundos; segundo clique confirma e apaga.
+function BotaoExcluir({ onConfirm, label = "excluir", small = false }) {
+  const [confirmando, setConfirmando] = useState(false);
+  const timerRef = React.useRef(null);
+
+  function clicar() {
+    if (confirmando) {
+      clearTimeout(timerRef.current);
+      setConfirmando(false);
+      onConfirm();
+      return;
+    }
+    setConfirmando(true);
+    timerRef.current = setTimeout(() => setConfirmando(false), 3000);
+  }
+
+  return (
+    <button
+      onClick={clicar}
+      style={{
+        background: confirmando ? COLORS.rust : "none",
+        border: confirmando ? "none" : "none",
+        color: confirmando ? "#fff" : COLORS.rust,
+        cursor: "pointer",
+        fontSize: small ? 12 : 13,
+        padding: confirmando ? "4px 9px" : 0,
+        borderRadius: 5,
+        textDecoration: confirmando ? "none" : "underline",
+        fontFamily: "'Source Serif 4', serif",
+        whiteSpace: "nowrap",
+      }}
+    >
+      {confirmando ? "confirmar?" : label}
+    </button>
+  );
+}
+
 function Button({ children, variant = "primary", ...props }) {
   const styles = {
     primary: { background: COLORS.burgundy, color: "#fff", border: "none" },
@@ -428,6 +479,8 @@ function App() {
   const [emprestimos, setEmprestimos] = useState([]);
   const [pessoas, setPessoas] = useState([]); // [{id, nome, sobrenome, telefone, email}]
   const [cobrancas, setCobrancas] = useState([]); // [{id, emprestimoId, tipo, data}]
+  const [categorias, setCategorias] = useState([]);
+  const [tags, setTags] = useState([]);
   const [config, setConfig] = useState({
     pix: "",
     recebedor: "",
@@ -502,6 +555,8 @@ function App() {
         setEmprestimos(m.emprestimos);
         setPessoas(m.pessoas);
         setCobrancas(m.cobrancas);
+        setCategorias(m.categorias);
+        setTags(m.tags);
         setConfig(m.config);
       } catch (e) {
         // outro aparelho pode ter mandado com senha diferente; ignora silenciosamente
@@ -539,6 +594,8 @@ function App() {
       setEmprestimos(m.emprestimos);
       setPessoas(m.pessoas);
       setCobrancas(m.cobrancas);
+      setCategorias(m.categorias);
+      setTags(m.tags);
       setConfig(m.config);
       setSenhaAtual(senha);
       setUnlocked(true);
@@ -559,6 +616,8 @@ function App() {
     setEmprestimos([]);
     setPessoas([]);
     setCobrancas([]);
+    setCategorias([]);
+    setTags([]);
     setConfig({ pix: "", recebedor: "", whatsappContato: "", linkVitrine: "", promocao: { ativa: false, descricao: "", validoAte: "" } });
     setSenhaAtual("");
     setUnlocked(false);
@@ -570,7 +629,7 @@ function App() {
     setSaving(true);
     const t = setTimeout(async () => {
       try {
-        const criptografado = await encryptJSON({ livros, emprestimos, pessoas, cobrancas, config }, senhaAtual);
+        const criptografado = await encryptJSON({ livros, emprestimos, pessoas, cobrancas, categorias, tags, config }, senhaAtual);
         await backendSet(criptografado);
         setTemDadosSalvos(true);
         if (cloudConfig) {
@@ -588,6 +647,7 @@ function App() {
                 capaUrl: l.capaUrl || null,
                 paginas: l.paginas || null,
                 categoria: l.categoria || "",
+                tags: l.tags || [],
                 disponivel: !ativo,
                 proximaData: ativo ? ativo.prazo : null,
               };
@@ -603,7 +663,7 @@ function App() {
       setSaving(false);
     }, 400);
     return () => clearTimeout(t);
-  }, [livros, emprestimos, pessoas, cobrancas, config, loaded, unlocked, senhaAtual, cloudConfig, cloudDocId]);
+  }, [livros, emprestimos, pessoas, cobrancas, categorias, tags, config, loaded, unlocked, senhaAtual, cloudConfig, cloudDocId]);
 
   function livroById(id) {
     return livros.find((l) => l.id === id);
@@ -640,6 +700,7 @@ function App() {
         valorSemanal: dados.valorSemanal ? parseFloat(dados.valorSemanal) : null,
         limiteSemanas: dados.limiteSemanas ? parseInt(dados.limiteSemanas, 10) : null,
         categoria: (dados.categoria || "").trim(),
+        tags: dados.tags || [],
       },
     ]);
   }
@@ -658,6 +719,7 @@ function App() {
               valorSemanal: dados.valorSemanal ? parseFloat(dados.valorSemanal) : null,
               limiteSemanas: dados.limiteSemanas ? parseInt(dados.limiteSemanas, 10) : null,
               categoria: (dados.categoria || "").trim(),
+              tags: dados.tags || [],
             }
           : l
       )
@@ -665,10 +727,6 @@ function App() {
   }
 
   function removeLivro(id) {
-    if (emprestimos.some((e) => e.livroId === id && !e.devolvido)) {
-      alert("Este livro está emprestado. Marque como devolvido antes de remover.");
-      return;
-    }
     setLivros((prev) => prev.filter((l) => l.id !== id));
   }
 
@@ -732,8 +790,16 @@ function App() {
     setEmprestimos((prev) =>
       prev.map((e) =>
         e.id === id
-          ? { ...e, pagamentos: [...(e.pagamentos || []), { valor: v, data: todayISO() }] }
+          ? { ...e, pagamentos: [...(e.pagamentos || []), { id: uid(), valor: v, data: todayISO() }] }
           : e
+      )
+    );
+  }
+
+  function removerPagamento(empId, pagamentoId) {
+    setEmprestimos((prev) =>
+      prev.map((e) =>
+        e.id === empId ? { ...e, pagamentos: (e.pagamentos || []).filter((p) => p.id !== pagamentoId) } : e
       )
     );
   }
@@ -745,6 +811,29 @@ function App() {
   // ---- Ações: Cobranças (fica registrado sempre que uma cobrança/lembrete é enviado) ----
   function registrarCobranca(emprestimoId, tipo, valor) {
     setCobrancas((prev) => [{ id: uid(), emprestimoId, tipo, valor: valor || 0, data: todayISO() }, ...prev]);
+  }
+  function removerCobranca(id) {
+    setCobrancas((prev) => prev.filter((c) => c.id !== id));
+  }
+
+  // ---- Ações: Categorias e Tags ----
+  function addCategoria(nome) {
+    const n = nome.trim();
+    if (!n || categorias.includes(n)) return;
+    setCategorias((prev) => [...prev, n].sort());
+  }
+  function removerCategoria(nome) {
+    setCategorias((prev) => prev.filter((c) => c !== nome));
+    setLivros((prev) => prev.map((l) => (l.categoria === nome ? { ...l, categoria: "" } : l)));
+  }
+  function addTag(nome) {
+    const n = nome.trim();
+    if (!n || tags.includes(n)) return;
+    setTags((prev) => [...prev, n].sort());
+  }
+  function removerTag(nome) {
+    setTags((prev) => prev.filter((t) => t !== nome));
+    setLivros((prev) => prev.map((l) => ({ ...l, tags: (l.tags || []).filter((t) => t !== nome) })));
   }
 
   if (!loaded) {
@@ -817,19 +906,27 @@ function App() {
         >
           Grupo Caseiro · Fichário
         </div>
-        <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
-          <h1
-            style={{
-              fontFamily: "'Playfair Display', serif",
-              fontStyle: "italic",
-              fontSize: 32,
-              margin: 0,
-              fontWeight: 700,
-            }}
-          >
-            {APP_NAME}
-          </h1>
-          <span style={{ fontSize: 18, color: COLORS.gold, opacity: 0.85 }}>ספרייה</span>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <img
+            src="icon-192.png"
+            alt=""
+            style={{ width: 34, height: 34, borderRadius: 8, border: `1px solid ${COLORS.gold}` }}
+            onError={(e) => (e.target.style.display = "none")}
+          />
+          <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
+            <h1
+              style={{
+                fontFamily: "'Playfair Display', serif",
+                fontStyle: "italic",
+                fontSize: 32,
+                margin: 0,
+                fontWeight: 700,
+              }}
+            >
+              {APP_NAME}
+            </h1>
+            <span style={{ fontSize: 18, color: COLORS.gold, opacity: 0.85 }}>ספרייה</span>
+          </div>
         </div>
         <div style={{ fontSize: 13, opacity: 0.75, marginTop: 4 }}>
           {saving ? "salvando…" : "biblioteca do grupo"}
@@ -849,6 +946,7 @@ function App() {
         {[
           { id: "emprestimos", label: "Empréstimos" },
           { id: "acervo", label: "Acervo" },
+          { id: "categorias", label: "Categorias" },
           { id: "pessoas", label: "Pessoas" },
           { id: "financeiro", label: "Financeiro" },
           { id: "ajustes", label: "Ajustes" },
@@ -891,12 +989,31 @@ function App() {
             onAdd={addEmprestimo}
             onDevolver={marcarDevolvido}
             onPagar={addPagamento}
+            onRemoverPagamento={removerPagamento}
             onRemover={removeEmprestimo}
             onRegistrarCobranca={registrarCobranca}
           />
         )}
         {tab === "acervo" && (
-          <AcervoTab livros={livros} emprestimos={emprestimos} onAdd={addLivro} onEdit={editarLivro} onRemove={removeLivro} />
+          <AcervoTab
+            livros={livros}
+            emprestimos={emprestimos}
+            categorias={categorias}
+            tags={tags}
+            onAdd={addLivro}
+            onEdit={editarLivro}
+            onRemove={removeLivro}
+          />
+        )}
+        {tab === "categorias" && (
+          <CategoriasTab
+            categorias={categorias}
+            tags={tags}
+            onAddCategoria={addCategoria}
+            onRemoverCategoria={removerCategoria}
+            onAddTag={addTag}
+            onRemoverTag={removerTag}
+          />
         )}
         {tab === "pessoas" && (
           <PessoasTab
@@ -918,6 +1035,7 @@ function App() {
             pessoaById={pessoaById}
             livroById={livroById}
             totalPago={totalPago}
+            onRemoverCobranca={removerCobranca}
           />
         )}
         {tab === "ajustes" && (
@@ -948,6 +1066,7 @@ function EmprestimosTab({
   onAdd,
   onDevolver,
   onPagar,
+  onRemoverPagamento,
   onRemover,
   onRegistrarCobranca,
 }) {
@@ -961,6 +1080,7 @@ function EmprestimosTab({
   const [prazo, setPrazo] = useState("");
   const [filtro, setFiltro] = useState("ativos");
   const [pagamentoInputs, setPagamentoInputs] = useState({});
+  const [erroForm, setErroForm] = useState("");
 
   const livrosDisponiveis = livros.filter(
     (l) => !emprestimos.some((e) => e.livroId === l.id && !e.devolvido)
@@ -968,9 +1088,10 @@ function EmprestimosTab({
 
   function submit() {
     if (!livroId || (!pessoaId && !nomeNovo.trim())) {
-      alert("Escolha um livro e quem está pegando.");
+      setErroForm("Escolha um livro e quem está pegando.");
       return;
     }
+    setErroForm("");
     onAdd({
       livroId,
       pessoaId: pessoaId || null,
@@ -990,22 +1111,36 @@ function EmprestimosTab({
     setShowForm(false);
   }
 
+  function preencherModelo(modelo, dados) {
+    return modelo
+      .replace(/\{(\w+)\}/g, (_, k) => (dados[k] !== undefined && dados[k] !== null ? dados[k] : ""))
+      .replace(/ {2,}/g, " ")
+      .trim();
+  }
+
   function mensagemCobranca(emp, livro, pessoa) {
     const restante = Math.max(0, (emp.valorCombinado || 0) - totalPago(emp));
-    let msg = `Oi ${pessoa ? pessoa.nome : ""}! 👋 Passando pra lembrar sobre o livro "${
-      livro ? livro.titulo : ""
-    }" que peguei emprestado com você — falta ${fmtMoney(restante)} do combinado.`;
-    if (config.pix) {
-      msg += ` Pix: ${config.pix}${config.recebedor ? " (" + config.recebedor + ")" : ""}.`;
-    }
-    msg += " Qualquer coisa me chama! 🙏";
-    return msg;
+    const pixTexto = config.pix ? `Pix: ${config.pix}${config.recebedor ? " (" + config.recebedor + ")" : ""}.` : "";
+    const modelo =
+      config.modeloCobranca ||
+      `Oi {nome}! 👋 Passando pra lembrar sobre o livro "{livro}" que te emprestei — falta {valor} do combinado. {pix} Qualquer coisa me chama! 🙏`;
+    return preencherModelo(modelo, {
+      nome: pessoa ? pessoa.nome : "",
+      livro: livro ? livro.titulo : "",
+      valor: fmtMoney(restante),
+      pix: pixTexto,
+    });
   }
 
   function mensagemRenovacao(emp, livro, pessoa) {
-    return `Oi ${pessoa ? pessoa.nome : ""}! 👋 Só passando pra saber sobre o livro "${
-      livro ? livro.titulo : ""
-    }" — o prazo era ${fmtDate(emp.prazo)}. Você já terminou ou quer renovar por mais um tempo? Me avisa 🙂`;
+    const modelo =
+      config.modeloRenovacao ||
+      `Oi {nome}! 👋 Só passando pra saber sobre o livro "{livro}" — o prazo era {prazo}. Você já terminou ou quer renovar por mais um tempo? Me avisa 🙂`;
+    return preencherModelo(modelo, {
+      nome: pessoa ? pessoa.nome : "",
+      livro: livro ? livro.titulo : "",
+      prazo: fmtDate(emp.prazo),
+    });
   }
 
   const lista = emprestimos
@@ -1169,6 +1304,7 @@ function EmprestimosTab({
               </div>
             </div>
 
+            {erroForm && <div style={{ fontSize: 12.5, color: COLORS.rust }}>{erroForm}</div>}
             <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
               <Button onClick={submit}>Registrar</Button>
               <Button variant="ghost" onClick={() => setShowForm(false)}>
@@ -1222,6 +1358,29 @@ function EmprestimosTab({
                     <span style={{ color: COLORS.sage }}>pago: {fmtMoney(pago)}</span>
                     {restante > 0 && <span style={{ color: COLORS.rust }}>falta: {fmtMoney(restante)}</span>}
                   </div>
+
+                  {(emp.pagamentos || []).length > 0 && (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 8 }}>
+                      {emp.pagamentos.map((p) => (
+                        <div
+                          key={p.id}
+                          style={{
+                            display: "flex",
+                            justifyContent: "space-between",
+                            alignItems: "center",
+                            fontSize: 12.5,
+                            color: COLORS.inkSoft,
+                            background: "#F5EFE0",
+                            borderRadius: 5,
+                            padding: "3px 8px",
+                          }}
+                        >
+                          <span>{fmtDate(p.data)} · {fmtMoney(p.valor)}</span>
+                          <BotaoExcluir small onConfirm={() => onRemoverPagamento(emp.id, p.id)} />
+                        </div>
+                      ))}
+                    </div>
+                  )}
 
                   {!emp.devolvido && (
                     <>
@@ -1290,24 +1449,14 @@ function EmprestimosTab({
                     </>
                   )}
                   {emp.devolvido && (
-                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                      <span style={{ fontSize: 12, color: COLORS.inkSoft }}>devolvido em {fmtDate(emp.dataDevolucao)}</span>
-                      <button
-                        onClick={() => onRemover(emp.id)}
-                        style={{
-                          marginLeft: "auto",
-                          background: "none",
-                          border: "none",
-                          color: COLORS.rust,
-                          fontSize: 12,
-                          cursor: "pointer",
-                          textDecoration: "underline",
-                        }}
-                      >
-                        remover registro
-                      </button>
+                    <div style={{ fontSize: 12, color: COLORS.inkSoft, marginBottom: 8 }}>
+                      devolvido em {fmtDate(emp.dataDevolucao)}
                     </div>
                   )}
+
+                  <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 4 }}>
+                    <BotaoExcluir label="excluir empréstimo" onConfirm={() => onRemover(emp.id)} />
+                  </div>
                 </div>
               </div>
             );
@@ -1320,14 +1469,32 @@ function EmprestimosTab({
 
 // ---------------- Acervo ----------------
 async function buscarCapaGoogleBooks(titulo, autor) {
-  const q = encodeURIComponent(`intitle:${titulo}${autor ? " inauthor:" + autor : ""}`);
-  const res = await fetch(`https://www.googleapis.com/books/v1/volumes?q=${q}&maxResults=1`);
-  const data = await res.json();
-  const link = data?.items?.[0]?.volumeInfo?.imageLinks?.thumbnail;
-  return link ? link.replace("http://", "https://") : null;
+  async function tentar(q) {
+    try {
+      const res = await fetch(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&maxResults=3`);
+      if (!res.ok) return null;
+      const data = await res.json();
+      const itens = data?.items || [];
+      for (const item of itens) {
+        const links = item?.volumeInfo?.imageLinks;
+        const link = links?.thumbnail || links?.smallThumbnail;
+        if (link) return link.replace("http://", "https://");
+      }
+      return null;
+    } catch (e) {
+      return null;
+    }
+  }
+  // 1ª tentativa: título + autor juntos (busca livre, sem operadores rígidos)
+  if (autor) {
+    const achou = await tentar(`${titulo} ${autor}`);
+    if (achou) return achou;
+  }
+  // 2ª tentativa: só o título
+  return await tentar(titulo);
 }
 
-function AcervoTab({ livros, emprestimos, onAdd, onEdit, onRemove }) {
+function AcervoTab({ livros, emprestimos, categorias, tags, onAdd, onEdit, onRemove }) {
   const [titulo, setTitulo] = useState("");
   const [autor, setAutor] = useState("");
   const [paginas, setPaginas] = useState("");
@@ -1336,6 +1503,7 @@ function AcervoTab({ livros, emprestimos, onAdd, onEdit, onRemove }) {
   const [valorSemanal, setValorSemanal] = useState("");
   const [limiteSemanas, setLimiteSemanas] = useState("");
   const [categoria, setCategoria] = useState("");
+  const [tagsSelecionadas, setTagsSelecionadas] = useState([]);
   const [buscandoCapa, setBuscandoCapa] = useState(false);
   const [editandoId, setEditandoId] = useState(null);
   const [editTitulo, setEditTitulo] = useState("");
@@ -1346,7 +1514,12 @@ function AcervoTab({ livros, emprestimos, onAdd, onEdit, onRemove }) {
   const [editValorSemanal, setEditValorSemanal] = useState("");
   const [editLimiteSemanas, setEditLimiteSemanas] = useState("");
   const [editCategoria, setEditCategoria] = useState("");
+  const [editTagsSelecionadas, setEditTagsSelecionadas] = useState([]);
   const [buscandoCapaEdit, setBuscandoCapaEdit] = useState(false);
+
+  function alternarTag(lista, setLista, tag) {
+    setLista(lista.includes(tag) ? lista.filter((t) => t !== tag) : [...lista, tag]);
+  }
 
   async function buscarCapaNovo() {
     if (!titulo.trim()) return;
@@ -1373,6 +1546,7 @@ function AcervoTab({ livros, emprestimos, onAdd, onEdit, onRemove }) {
     setEditValorSemanal(l.valorSemanal || "");
     setEditLimiteSemanas(l.limiteSemanas || "");
     setEditCategoria(l.categoria || "");
+    setEditTagsSelecionadas(l.tags || []);
   }
   function salvarEdicao() {
     onEdit(editandoId, {
@@ -1384,6 +1558,7 @@ function AcervoTab({ livros, emprestimos, onAdd, onEdit, onRemove }) {
       valorSemanal: editValorSemanal,
       limiteSemanas: editLimiteSemanas,
       categoria: editCategoria,
+      tags: editTagsSelecionadas,
     });
     setEditandoId(null);
   }
@@ -1419,8 +1594,41 @@ function AcervoTab({ livros, emprestimos, onAdd, onEdit, onRemove }) {
             <label style={{ ...labelStyle, marginBottom: 2, display: "block" }}>Dia de aquisição</label>
             <Input type="date" value={dataAquisicao} onChange={(e) => setDataAquisicao(e.target.value)} />
           </div>
-          <Input placeholder="Categoria (ex: teologia)" value={categoria} onChange={(e) => setCategoria(e.target.value)} style={{ flex: "1 1 140px" }} />
+          <select value={categoria} onChange={(e) => setCategoria(e.target.value)} style={{ ...inputBase, flex: "1 1 140px" }}>
+            <option value="">Sem categoria</option>
+            {categorias.map((c) => (
+              <option key={c} value={c}>{c}</option>
+            ))}
+          </select>
         </div>
+        {tags.length > 0 && (
+          <div>
+            <label style={{ ...labelStyle, marginBottom: 4, display: "block" }}>Tags</label>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {tags.map((t) => {
+                const ativa = tagsSelecionadas.includes(t);
+                return (
+                  <button
+                    key={t}
+                    type="button"
+                    onClick={() => alternarTag(tagsSelecionadas, setTagsSelecionadas, t)}
+                    style={{
+                      fontSize: 12.5,
+                      padding: "5px 10px",
+                      borderRadius: 14,
+                      border: `1.5px solid ${ativa ? COLORS.gold : COLORS.rule}`,
+                      background: ativa ? "#FBF3DC" : "#fff",
+                      color: ativa ? COLORS.ink : COLORS.inkSoft,
+                      cursor: "pointer",
+                    }}
+                  >
+                    #{t}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <Input
             type="number"
@@ -1455,7 +1663,7 @@ function AcervoTab({ livros, emprestimos, onAdd, onEdit, onRemove }) {
         <Button
           style={{ alignSelf: "flex-start" }}
           onClick={() => {
-            onAdd({ titulo, autor, paginas, dataAquisicao, capaUrl, valorSemanal, limiteSemanas, categoria });
+            onAdd({ titulo, autor, paginas, dataAquisicao, capaUrl, valorSemanal, limiteSemanas, categoria, tags: tagsSelecionadas });
             setTitulo("");
             setAutor("");
             setPaginas("");
@@ -1464,6 +1672,7 @@ function AcervoTab({ livros, emprestimos, onAdd, onEdit, onRemove }) {
             setValorSemanal("");
             setLimiteSemanas("");
             setCategoria("");
+            setTagsSelecionadas([]);
           }}
         >
           Adicionar ao acervo
@@ -1497,10 +1706,40 @@ function AcervoTab({ livros, emprestimos, onAdd, onEdit, onRemove }) {
                     <Input type="date" value={editData} onChange={(e) => setEditData(e.target.value)} style={{ flex: "1 1 140px" }} />
                   </div>
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                    <Input placeholder="Categoria" value={editCategoria} onChange={(e) => setEditCategoria(e.target.value)} style={{ flex: "1 1 130px" }} />
+                    <select value={editCategoria} onChange={(e) => setEditCategoria(e.target.value)} style={{ ...inputBase, flex: "1 1 130px" }}>
+                      <option value="">Sem categoria</option>
+                      {categorias.map((c) => (
+                        <option key={c} value={c}>{c}</option>
+                      ))}
+                    </select>
                     <Input type="number" step="0.01" placeholder="Valor semanal (R$)" value={editValorSemanal} onChange={(e) => setEditValorSemanal(e.target.value)} style={{ flex: "1 1 140px" }} />
                     <Input type="number" placeholder="Limite semanas" value={editLimiteSemanas} onChange={(e) => setEditLimiteSemanas(e.target.value)} style={{ flex: "1 1 120px" }} />
                   </div>
+                  {tags.length > 0 && (
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                      {tags.map((t) => {
+                        const ativa = editTagsSelecionadas.includes(t);
+                        return (
+                          <button
+                            key={t}
+                            type="button"
+                            onClick={() => alternarTag(editTagsSelecionadas, setEditTagsSelecionadas, t)}
+                            style={{
+                              fontSize: 12.5,
+                              padding: "5px 10px",
+                              borderRadius: 14,
+                              border: `1.5px solid ${ativa ? COLORS.gold : COLORS.rule}`,
+                              background: ativa ? "#FBF3DC" : "#fff",
+                              color: ativa ? COLORS.ink : COLORS.inkSoft,
+                              cursor: "pointer",
+                            }}
+                          >
+                            #{t}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
                   <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                     <Input placeholder="Link da capa" value={editCapaUrl} onChange={(e) => setEditCapaUrl(e.target.value)} style={{ flex: 1 }} />
                     {editCapaUrl && (
@@ -1560,6 +1799,11 @@ function AcervoTab({ livros, emprestimos, onAdd, onEdit, onRemove }) {
                       {l.valorSemanal ? `${fmtMoney(l.valorSemanal)}/semana` : ""}
                       {l.limiteSemanas ? ` · limite ${l.limiteSemanas} sem.` : ""}
                     </div>
+                    {l.tags && l.tags.length > 0 && (
+                      <div style={{ fontSize: 11, color: COLORS.inkSoft, marginTop: 2 }}>
+                        {l.tags.map((t) => `#${t}`).join(" ")}
+                      </div>
+                    )}
                   </div>
                   <span
                     style={{
@@ -1581,13 +1825,7 @@ function AcervoTab({ livros, emprestimos, onAdd, onEdit, onRemove }) {
                   >
                     editar
                   </button>
-                  <button
-                    onClick={() => onRemove(l.id)}
-                    style={{ background: "none", border: "none", color: COLORS.rust, cursor: "pointer", fontSize: 18, lineHeight: 1 }}
-                    title="Remover"
-                  >
-                    ×
-                  </button>
+                  <BotaoExcluir label="excluir" onConfirm={() => onRemove(l.id)} />
                 </div>
               )}
             </div>
@@ -1595,6 +1833,114 @@ function AcervoTab({ livros, emprestimos, onAdd, onEdit, onRemove }) {
         })}
       </div>
     </Section>
+  );
+}
+
+// ---------------- Categorias e Tags ----------------
+function CategoriasTab({ categorias, tags, onAddCategoria, onRemoverCategoria, onAddTag, onRemoverTag }) {
+  const [novaCategoria, setNovaCategoria] = useState("");
+  const [novaTag, setNovaTag] = useState("");
+
+  return (
+    <div>
+      <Section eyebrow="Organização" title="Categorias">
+        <div style={{ fontSize: 12.5, color: COLORS.inkSoft, marginBottom: 12 }}>
+          Cada livro tem <b>uma</b> categoria (ex: teologia, biografia, ficção). Cadastre aqui pra elas aparecerem
+          como opções prontas no Acervo.
+        </div>
+        <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+          <Input
+            placeholder="Nova categoria"
+            value={novaCategoria}
+            onChange={(e) => setNovaCategoria(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                onAddCategoria(novaCategoria);
+                setNovaCategoria("");
+              }
+            }}
+          />
+          <Button
+            onClick={() => {
+              onAddCategoria(novaCategoria);
+              setNovaCategoria("");
+            }}
+          >
+            Adicionar
+          </Button>
+        </div>
+        {categorias.length === 0 && <EmptyState text="Nenhuma categoria cadastrada ainda." />}
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+          {categorias.map((c) => (
+            <div
+              key={c}
+              style={{
+                background: COLORS.card,
+                border: `1.5px solid ${COLORS.rule}`,
+                borderRadius: 20,
+                padding: "6px 8px 6px 14px",
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                fontSize: 13.5,
+              }}
+            >
+              {c}
+              <BotaoExcluir small label="×" onConfirm={() => onRemoverCategoria(c)} />
+            </div>
+          ))}
+        </div>
+      </Section>
+
+      <Section eyebrow="Organização" title="Tags">
+        <div style={{ fontSize: 12.5, color: COLORS.inkSoft, marginBottom: 12 }}>
+          As tags funcionam como subcategorias — um livro pode ter <b>várias</b> ao mesmo tempo (ex: "reforma",
+          "apologética", "leitura fácil").
+        </div>
+        <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+          <Input
+            placeholder="Nova tag"
+            value={novaTag}
+            onChange={(e) => setNovaTag(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                onAddTag(novaTag);
+                setNovaTag("");
+              }
+            }}
+          />
+          <Button
+            onClick={() => {
+              onAddTag(novaTag);
+              setNovaTag("");
+            }}
+          >
+            Adicionar
+          </Button>
+        </div>
+        {tags.length === 0 && <EmptyState text="Nenhuma tag cadastrada ainda." />}
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+          {tags.map((t) => (
+            <div
+              key={t}
+              style={{
+                background: "#FBF3DC",
+                border: `1.5px solid ${COLORS.gold}`,
+                borderRadius: 20,
+                padding: "6px 8px 6px 14px",
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                fontSize: 13.5,
+              }}
+            >
+              #{t}
+              <BotaoExcluir small label="×" onConfirm={() => onRemoverTag(t)} />
+            </div>
+          ))}
+        </div>
+      </Section>
+    </div>
   );
 }
 
@@ -1829,7 +2175,7 @@ function PessoasTab({
 }
 
 // ---------------- Financeiro ----------------
-function FinanceiroTab({ emprestimos, cobrancas, pessoaById, livroById, totalPago }) {
+function FinanceiroTab({ emprestimos, cobrancas, pessoaById, livroById, totalPago, onRemoverCobranca }) {
   const totalCombinado = emprestimos.reduce((s, e) => s + (e.valorCombinado || 0), 0);
   const totalRecebido = emprestimos.reduce((s, e) => s + totalPago(e), 0);
   const totalPendente = Math.max(0, totalCombinado - totalRecebido);
@@ -2022,11 +2368,14 @@ function FinanceiroTab({ emprestimos, cobrancas, pessoaById, livroById, totalPag
                     {rotuloTipo[c.tipo] || c.tipo} · {fmtDate(c.data)}
                   </div>
                 </div>
-                {c.valor > 0 && (
-                  <div style={{ fontFamily: "'JetBrains Mono', monospace", color: COLORS.gold, fontWeight: 600 }}>
-                    {fmtMoney(c.valor)}
-                  </div>
-                )}
+                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                  {c.valor > 0 && (
+                    <div style={{ fontFamily: "'JetBrains Mono', monospace", color: COLORS.gold, fontWeight: 600 }}>
+                      {fmtMoney(c.valor)}
+                    </div>
+                  )}
+                  <BotaoExcluir small onConfirm={() => onRemoverCobranca(c.id)} />
+                </div>
               </div>
             );
           })}
@@ -2045,6 +2394,12 @@ function AjustesTab({ config, onChange, cloudConfig, cloudStatus, onConfigurarNu
   const [promoAtiva, setPromoAtiva] = useState(config.promocao?.ativa || false);
   const [promoDescricao, setPromoDescricao] = useState(config.promocao?.descricao || "");
   const [promoValidoAte, setPromoValidoAte] = useState(config.promocao?.validoAte || "");
+  const MODELO_COBRANCA_PADRAO =
+    'Oi {nome}! 👋 Passando pra lembrar sobre o livro "{livro}" que te emprestei — falta {valor} do combinado. {pix} Qualquer coisa me chama! 🙏';
+  const MODELO_RENOVACAO_PADRAO =
+    'Oi {nome}! 👋 Só passando pra saber sobre o livro "{livro}" — o prazo era {prazo}. Você já terminou ou quer renovar por mais um tempo? Me avisa 🙂';
+  const [modeloCobranca, setModeloCobranca] = useState(config.modeloCobranca || MODELO_COBRANCA_PADRAO);
+  const [modeloRenovacao, setModeloRenovacao] = useState(config.modeloRenovacao || MODELO_RENOVACAO_PADRAO);
   const [colado, setColado] = useState("");
   const [docId, setDocId] = useState(cloudConfig?.docId || "principal");
   const [erroNuvem, setErroNuvem] = useState("");
@@ -2056,6 +2411,8 @@ function AjustesTab({ config, onChange, cloudConfig, cloudStatus, onConfigurarNu
       whatsappContato,
       linkVitrine,
       promocao: { ativa: promoAtiva, descricao: promoDescricao, validoAte: promoValidoAte },
+      modeloCobranca,
+      modeloRenovacao,
     });
   }
 
@@ -2101,6 +2458,56 @@ function AjustesTab({ config, onChange, cloudConfig, cloudStatus, onConfigurarNu
         <Button style={{ alignSelf: "flex-start" }} onClick={salvarGeral}>
           Salvar
         </Button>
+      </div>
+
+      <div
+        style={{
+          background: COLORS.card,
+          border: `1.5px solid ${COLORS.rule}`,
+          borderRadius: 10,
+          padding: 16,
+          marginTop: 16,
+          display: "flex",
+          flexDirection: "column",
+          gap: 10,
+        }}
+      >
+        <div style={{ fontFamily: "'Playfair Display', serif", fontWeight: 700, fontSize: 16 }}>
+          Textos das mensagens
+        </div>
+        <div style={{ fontSize: 12, color: COLORS.inkSoft }}>
+          Use <code>{"{nome}"}</code>, <code>{"{livro}"}</code>, <code>{"{valor}"}</code>, <code>{"{prazo}"}</code> e{" "}
+          <code>{"{pix}"}</code> — eles são trocados automaticamente na hora de enviar.
+        </div>
+        <label style={labelStyle}>Mensagem de cobrança</label>
+        <textarea
+          value={modeloCobranca}
+          onChange={(e) => setModeloCobranca(e.target.value)}
+          rows={3}
+          style={{ ...inputBase, fontFamily: "'Source Serif 4', serif" }}
+        />
+        <label style={labelStyle}>Mensagem de lembrete de prazo</label>
+        <textarea
+          value={modeloRenovacao}
+          onChange={(e) => setModeloRenovacao(e.target.value)}
+          rows={3}
+          style={{ ...inputBase, fontFamily: "'Source Serif 4', serif" }}
+        />
+        <div style={{ display: "flex", gap: 8 }}>
+          <Button style={{ alignSelf: "flex-start" }} onClick={salvarGeral}>
+            Salvar textos
+          </Button>
+          <Button
+            variant="ghost"
+            style={{ alignSelf: "flex-start" }}
+            onClick={() => {
+              setModeloCobranca(MODELO_COBRANCA_PADRAO);
+              setModeloRenovacao(MODELO_RENOVACAO_PADRAO);
+            }}
+          >
+            Restaurar padrão
+          </Button>
+        </div>
       </div>
 
       <div
