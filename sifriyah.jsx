@@ -293,6 +293,13 @@ function nomeCompleto(p) {
   if (!p) return "";
   return `${p.nome || ""}${p.sobrenome ? " " + p.sobrenome : ""}`.trim();
 }
+// escolhe a palavra certa (ele/ela, ou outra dupla) conforme o gênero cadastrado da pessoa;
+// se não tiver gênero informado, usa a alternativa neutra (ou feminino, se nenhuma neutra for passada)
+function pronomeGenero(p, masculino, feminino, neutro) {
+  if (p?.genero === "M") return masculino;
+  if (p?.genero === "F") return feminino;
+  return neutro !== undefined ? neutro : feminino;
+}
 function separarNome(nomeFull) {
   const partes = (nomeFull || "").trim().split(/\s+/);
   if (partes.length <= 1) return { nome: partes[0] || "", sobrenome: "" };
@@ -306,6 +313,7 @@ function migrarDados(parsed) {
     dataAquisicao: null,
     capaUrl: null,
     valorSemanal: null,
+    valorSemanaExtra: null,
     limiteSemanas: null,
     categoria: "",
     tags: [],
@@ -346,6 +354,7 @@ function migrarDados(parsed) {
     })),
     pessoas,
     cobrancas: parsed.cobrancas || [],
+    filas: parsed.filas || [],
     categorias,
     tags,
     config: {
@@ -360,11 +369,11 @@ function migrarDados(parsed) {
 }
 
 // separa os dados completos nas 4 seções (usado ao salvar/fazer backup)
-function montarSecoes({ livros, categorias, tags, pessoas, emprestimos, cobrancas, config }) {
+function montarSecoes({ livros, categorias, tags, pessoas, emprestimos, cobrancas, filas, config }) {
   return {
     acervo: { livros, categorias, tags },
     pessoas: { pessoas },
-    emprestimos: { emprestimos, cobrancas },
+    emprestimos: { emprestimos, cobrancas, filas },
     ajustes: { config },
   };
 }
@@ -378,6 +387,7 @@ function combinarSecoes(decodificadoPorSecao) {
     pessoas: decodificadoPorSecao.pessoas?.pessoas,
     emprestimos: decodificadoPorSecao.emprestimos?.emprestimos,
     cobrancas: decodificadoPorSecao.emprestimos?.cobrancas,
+    filas: decodificadoPorSecao.emprestimos?.filas,
     config: decodificadoPorSecao.ajustes?.config,
   };
 }
@@ -527,6 +537,17 @@ function BotaoExcluir({ onConfirm, label = "excluir", small = false }) {
 
 // seletor de tags mais organizado: mostra as já selecionadas primeiro, o resto em ordem
 // alfabética, e um campo de busca quando a lista de tags fica grande
+// uma "coluna" de formulário com rótulo em cima — usada pra alinhar campos numa linha tipo tabela,
+// todos com a mesma largura e altura
+function CampoCol({ label, children }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 4, flex: "1 1 0", minWidth: 88 }}>
+      <label style={{ ...labelStyle, marginBottom: 0, fontSize: 11, whiteSpace: "nowrap" }}>{label}</label>
+      {children}
+    </div>
+  );
+}
+
 function SeletorTags({ todasTags, selecionadas, onToggle }) {
   const [filtro, setFiltro] = useState("");
   const ordenadas = [...todasTags].sort((a, b) => a.localeCompare(b, "pt-BR"));
@@ -693,6 +714,7 @@ export default function App() {
   const [emprestimos, setEmprestimos] = useState([]);
   const [pessoas, setPessoas] = useState([]); // [{id, nome, sobrenome, telefone, email}]
   const [cobrancas, setCobrancas] = useState([]); // [{id, emprestimoId, tipo, data}]
+  const [filas, setFilas] = useState([]); // [{id, livroId, pessoaId, criadoEm, ordem}]
   const [categorias, setCategorias] = useState([]);
   const [tags, setTags] = useState([]);
   const [config, setConfig] = useState({
@@ -819,6 +841,7 @@ export default function App() {
         } else if (secao === "emprestimos") {
           setEmprestimos(obj.emprestimos || []);
           setCobrancas(obj.cobrancas || []);
+          setFilas(obj.filas || []);
         } else if (secao === "ajustes") {
           setConfig(obj.config || {});
         }
@@ -876,6 +899,7 @@ export default function App() {
       setEmprestimos(m.emprestimos);
       setPessoas(m.pessoas);
       setCobrancas(m.cobrancas);
+      setFilas(m.filas || []);
       setCategorias(m.categorias);
       setTags(m.tags);
       setConfig(m.config);
@@ -913,6 +937,7 @@ export default function App() {
     setEmprestimos([]);
     setPessoas([]);
     setCobrancas([]);
+    setFilas([]);
     setCategorias([]);
     setTags([]);
     setConfig({ pix: "", recebedor: "", whatsappContato: "", linkVitrine: "", promocao: { ativa: false, descricao: "", validoAte: "", desconto: 0 } });
@@ -999,7 +1024,7 @@ export default function App() {
     let concluido = false;
     const t = setTimeout(async () => {
       try {
-        await salvarSecao("emprestimos", { emprestimos, cobrancas });
+        await salvarSecao("emprestimos", { emprestimos, cobrancas, filas });
         setTemDadosSalvos(true);
         setCloudStatus(cloudConfig ? "sincronizada" : "desligada");
       } catch (e) {
@@ -1013,7 +1038,7 @@ export default function App() {
       clearTimeout(t);
       if (!concluido) terminarSalvando();
     };
-  }, [emprestimos, cobrancas, loaded, unlocked, senhaAtual, cloudConfig, cloudDocId]);
+  }, [emprestimos, cobrancas, filas, loaded, unlocked, senhaAtual, cloudConfig, cloudDocId]);
 
   useEffect(() => {
     if (!loaded || !unlocked || !senhaAtual) return;
@@ -1097,7 +1122,7 @@ export default function App() {
   }
 
   async function fazerBackup(tipo) {
-    const secoesAtuais = montarSecoes({ livros, categorias, tags, pessoas, emprestimos, cobrancas, config });
+    const secoesAtuais = montarSecoes({ livros, categorias, tags, pessoas, emprestimos, cobrancas, filas, config });
     const blobsPorSecao = {};
     for (const s of SECOES) {
       blobsPorSecao[s] = await encryptJSON(secoesAtuais[s], senhaAtual);
@@ -1153,6 +1178,7 @@ export default function App() {
     setEmprestimos(m.emprestimos);
     setPessoas(m.pessoas);
     setCobrancas(m.cobrancas);
+    setFilas(m.filas || []);
     setCategorias(m.categorias);
     setTags(m.tags);
     setConfig(m.config);
@@ -1184,7 +1210,7 @@ export default function App() {
   // re-criptografa as 4 seções e todos os backups já existentes com uma nova senha/frase —
   // usado tanto pra trocar de senha quanto pra ativar/desativar o modo sem senha
   async function reencriptarTudoCom(senhaAntiga, senhaNova) {
-    const secoesAtuais = montarSecoes({ livros, categorias, tags, pessoas, emprestimos, cobrancas, config });
+    const secoesAtuais = montarSecoes({ livros, categorias, tags, pessoas, emprestimos, cobrancas, filas, config });
     for (const s of SECOES) {
       await salvarSecao(s, secoesAtuais[s], senhaNova);
     }
@@ -1320,6 +1346,7 @@ export default function App() {
         dataAquisicao: dados.dataAquisicao || null,
         capaUrl: dados.capaUrl || null,
         valorSemanal: dados.valorSemanal ? parseFloat(dados.valorSemanal) : null,
+        valorSemanaExtra: dados.valorSemanaExtra ? parseFloat(dados.valorSemanaExtra) : null,
         limiteSemanas: dados.limiteSemanas ? parseInt(dados.limiteSemanas, 10) : null,
         categoria: (dados.categoria || "").trim(),
         tags: dados.tags || [],
@@ -1343,6 +1370,7 @@ export default function App() {
               dataAquisicao: dados.dataAquisicao || null,
               capaUrl: dados.capaUrl || null,
               valorSemanal: dados.valorSemanal ? parseFloat(dados.valorSemanal) : null,
+              valorSemanaExtra: dados.valorSemanaExtra ? parseFloat(dados.valorSemanaExtra) : null,
               limiteSemanas: dados.limiteSemanas ? parseInt(dados.limiteSemanas, 10) : null,
               categoria: (dados.categoria || "").trim(),
               tags: dados.tags || [],
@@ -1407,6 +1435,57 @@ export default function App() {
       },
       ...prev,
     ]);
+    // se essa pessoa estava na fila de espera desse livro, já sai da fila (pegou o livro agora)
+    setFilas((prev) => prev.filter((f) => !(f.livroId === data.livroId && f.pessoaId === pessoaId)));
+  }
+
+  // ---- Fila de espera por livro ----
+  function adicionarNaFila(livroId, pessoaId, dadosNovaPessoa) {
+    let pid = pessoaId;
+    if (!pid && dadosNovaPessoa && dadosNovaPessoa.nome && dadosNovaPessoa.nome.trim()) {
+      pid = uid();
+      setPessoas((prev) => [
+        ...prev,
+        {
+          id: pid,
+          nome: dadosNovaPessoa.nome.trim(),
+          sobrenome: (dadosNovaPessoa.sobrenome || "").trim(),
+          telefone: dadosNovaPessoa.telefone || "",
+          email: "",
+        },
+      ]);
+    }
+    if (!pid) return;
+    // evita duplicar a mesma pessoa na fila do mesmo livro
+    setFilas((prev) =>
+      prev.some((f) => f.livroId === livroId && f.pessoaId === pid)
+        ? prev
+        : [...prev, { id: uid(), livroId, pessoaId: pid, criadoEm: Date.now() }]
+    );
+  }
+  function removerDaFila(id) {
+    setFilas((prev) => prev.filter((f) => f.id !== id));
+  }
+  // troca a posição de uma entrada com a vizinha (dentro da fila do mesmo livro), pra cima ou pra baixo
+  function moverNaFila(id, direcao) {
+    setFilas((prev) => {
+      const entrada = prev.find((f) => f.id === id);
+      if (!entrada) return prev;
+      const doMesmoLivro = prev
+        .filter((f) => f.livroId === entrada.livroId)
+        .sort((a, b) => (a.ordem ?? a.criadoEm) - (b.ordem ?? b.criadoEm));
+      const pos = doMesmoLivro.findIndex((f) => f.id === id);
+      const novaPos = pos + direcao;
+      if (novaPos < 0 || novaPos >= doMesmoLivro.length) return prev;
+      const vizinho = doMesmoLivro[novaPos];
+      const ordemEntrada = entrada.ordem ?? entrada.criadoEm;
+      const ordemVizinho = vizinho.ordem ?? vizinho.criadoEm;
+      return prev.map((f) => {
+        if (f.id === entrada.id) return { ...f, ordem: ordemVizinho };
+        if (f.id === vizinho.id) return { ...f, ordem: ordemEntrada };
+        return f;
+      });
+    });
   }
 
   function marcarDevolvido(id, desconto) {
@@ -1434,7 +1513,7 @@ export default function App() {
         const livro = livroById(e.livroId);
         const baseParaSomar = e.prazo || todayISO();
         const novoPrazo = somarSemanas(baseParaSomar, 1);
-        const acrescimo = livro && livro.valorSemanal ? livro.valorSemanal : 0;
+        const acrescimo = livro ? livro.valorSemanaExtra || livro.valorSemanal || 0 : 0;
         return { ...e, prazo: novoPrazo, valorCombinado: (e.valorCombinado || 0) + acrescimo };
       })
     );
@@ -1649,6 +1728,7 @@ export default function App() {
             totalPago={totalPago}
             livroById={livroById}
             config={config}
+            filas={filas}
             onAdd={addEmprestimo}
             onDevolver={marcarDevolvido}
             onRenovarSemana={renovarSemana}
@@ -1664,9 +1744,15 @@ export default function App() {
             emprestimos={emprestimos}
             categorias={categorias}
             tags={tags}
+            pessoas={pessoas}
+            pessoaById={pessoaById}
+            filas={filas}
             onAdd={addLivro}
             onEdit={editarLivro}
             onRemove={removeLivro}
+            onAdicionarFila={adicionarNaFila}
+            onRemoverFila={removerDaFila}
+            onMoverFila={moverNaFila}
           />
         )}
         {tab === "categorias" && (
@@ -1740,6 +1826,7 @@ function EmprestimosTab({
   totalPago,
   livroById,
   config,
+  filas,
   onAdd,
   onDevolver,
   onRenovarSemana,
@@ -1974,8 +2061,31 @@ function EmprestimosTab({
               return (
                 <div style={{ fontSize: 12.5, color: COLORS.inkSoft, fontFamily: "'JetBrains Mono', monospace" }}>
                   {l.valorSemanal ? `${fmtMoney(l.valorSemanal)}/semana` : ""}
-                  {l.valorSemanal && l.limiteSemanas ? " · " : ""}
-                  {l.limiteSemanas ? `limite de ${l.limiteSemanas} semana(s) pra esse livro` : ""}
+                  {l.limiteSemanas ? ` · limite de ${l.limiteSemanas} semana(s)` : ""}
+                  {l.valorSemanaExtra ? ` · ${fmtMoney(l.valorSemanaExtra)}/semana extra` : ""}
+                </div>
+              );
+            })()}
+            {livroId && (() => {
+              const filaDoLivro = filas
+                .filter((f) => f.livroId === livroId)
+                .sort((a, b) => (a.ordem ?? a.criadoEm) - (b.ordem ?? b.criadoEm));
+              if (filaDoLivro.length === 0) return null;
+              const primeiro = pessoaById(filaDoLivro[0].pessoaId);
+              return (
+                <div style={{ fontSize: 12, color: COLORS.burgundy, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <span>
+                    ⏳ {filaDoLivro.length} na fila — 1º: {primeiro ? nomeCompleto(primeiro) : "(pessoa removida)"}
+                  </span>
+                  {primeiro && (
+                    <button
+                      type="button"
+                      onClick={() => setPessoaId(primeiro.id)}
+                      style={{ background: "none", border: "none", color: COLORS.burgundy, textDecoration: "underline", cursor: "pointer", fontSize: 12 }}
+                    >
+                      usar esta pessoa
+                    </button>
+                  )}
                 </div>
               );
             })()}
@@ -2205,39 +2315,87 @@ function EmprestimosTab({
 }
 
 // ---------------- Acervo ----------------
-async function buscarCapaGoogleBooks(titulo, autor) {
+async function buscarCapaGoogleBooks(titulo, q_autor) {
   async function tentar(q) {
-    try {
-      const res = await fetch(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&maxResults=3`);
-      if (!res.ok) return null;
-      const data = await res.json();
-      const itens = data?.items || [];
-      for (const item of itens) {
-        const links = item?.volumeInfo?.imageLinks;
-        const link = links?.thumbnail || links?.smallThumbnail;
-        if (link) return link.replace("http://", "https://");
-      }
-      return null;
-    } catch (e) {
-      return null;
+    const res = await fetch(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&maxResults=5`);
+    if (!res.ok) throw new Error("google-books-http-" + res.status);
+    const data = await res.json();
+    const itens = data?.items || [];
+    for (const item of itens) {
+      const links = item?.volumeInfo?.imageLinks;
+      const link = links?.thumbnail || links?.smallThumbnail;
+      if (link) return link.replace("http://", "https://");
     }
+    return null;
   }
   // 1ª tentativa: título + autor juntos (busca livre, sem operadores rígidos)
-  if (autor) {
-    const achou = await tentar(`${titulo} ${autor}`);
+  if (q_autor) {
+    const achou = await tentar(`${titulo} ${q_autor}`);
     if (achou) return achou;
   }
   // 2ª tentativa: só o título
   return await tentar(titulo);
 }
 
-function AcervoTab({ livros, emprestimos, categorias, tags, onAdd, onEdit, onRemove }) {
+async function buscarCapaOpenLibrary(titulo, autor) {
+  const q = autor ? `${titulo} ${autor}` : titulo;
+  const res = await fetch(`https://openlibrary.org/search.json?q=${encodeURIComponent(q)}&limit=5&fields=cover_i`);
+  if (!res.ok) throw new Error("open-library-http-" + res.status);
+  const data = await res.json();
+  const itens = data?.docs || [];
+  for (const item of itens) {
+    if (item.cover_i) return `https://covers.openlibrary.org/b/id/${item.cover_i}-M.jpg`;
+  }
+  return null;
+}
+
+// tenta o Google Books primeiro e, se não achar nada (ou der erro — rede, CORS, etc.),
+// tenta o Open Library como segunda fonte. Retorna { link, motivo } — motivo explica
+// o que aconteceu quando link vem nulo, pra não ficar um botão que "não faz nada".
+async function buscarCapaLivro(titulo, autor) {
+  let erroGoogle = null;
+  try {
+    const link = await buscarCapaGoogleBooks(titulo, autor);
+    if (link) return { link, motivo: null };
+  } catch (e) {
+    erroGoogle = e.message;
+  }
+  try {
+    const link = await buscarCapaOpenLibrary(titulo, autor);
+    if (link) return { link, motivo: null };
+  } catch (e) {
+    return {
+      link: null,
+      motivo: erroGoogle
+        ? "Não consegui acessar os buscadores de capa agora (sem internet ou bloqueado pelo navegador)."
+        : "Nenhuma capa encontrada pra esse título nos buscadores.",
+    };
+  }
+  return { link: null, motivo: "Nenhuma capa encontrada pra esse título nos buscadores." };
+}
+
+function AcervoTab({
+  livros,
+  emprestimos,
+  categorias,
+  tags,
+  pessoas,
+  pessoaById,
+  filas,
+  onAdd,
+  onEdit,
+  onRemove,
+  onAdicionarFila,
+  onRemoverFila,
+  onMoverFila,
+}) {
   const [titulo, setTitulo] = useState("");
   const [autor, setAutor] = useState("");
   const [paginas, setPaginas] = useState("");
   const [dataAquisicao, setDataAquisicao] = useState("");
   const [capaUrl, setCapaUrl] = useState("");
   const [valorSemanal, setValorSemanal] = useState("");
+  const [valorSemanaExtra, setValorSemanaExtra] = useState("");
   const [limiteSemanas, setLimiteSemanas] = useState("");
   const [quantidade, setQuantidade] = useState("1");
   const [categoria, setCategoria] = useState("");
@@ -2246,6 +2404,7 @@ function AcervoTab({ livros, emprestimos, categorias, tags, onAdd, onEdit, onRem
   const [linkExterno, setLinkExterno] = useState("");
   const [tagsSelecionadas, setTagsSelecionadas] = useState([]);
   const [buscandoCapa, setBuscandoCapa] = useState(false);
+  const [avisoCapa, setAvisoCapa] = useState("");
   const [editandoId, setEditandoId] = useState(null);
   const [editTitulo, setEditTitulo] = useState("");
   const [editAutor, setEditAutor] = useState("");
@@ -2253,6 +2412,7 @@ function AcervoTab({ livros, emprestimos, categorias, tags, onAdd, onEdit, onRem
   const [editData, setEditData] = useState("");
   const [editCapaUrl, setEditCapaUrl] = useState("");
   const [editValorSemanal, setEditValorSemanal] = useState("");
+  const [editValorSemanaExtra, setEditValorSemanaExtra] = useState("");
   const [editLimiteSemanas, setEditLimiteSemanas] = useState("");
   const [editQuantidade, setEditQuantidade] = useState("1");
   const [editCategoria, setEditCategoria] = useState("");
@@ -2261,6 +2421,13 @@ function AcervoTab({ livros, emprestimos, categorias, tags, onAdd, onEdit, onRem
   const [editLinkExterno, setEditLinkExterno] = useState("");
   const [editTagsSelecionadas, setEditTagsSelecionadas] = useState([]);
   const [buscandoCapaEdit, setBuscandoCapaEdit] = useState(false);
+  const [avisoCapaEdit, setAvisoCapaEdit] = useState("");
+  const [filaSelecionado, setFilaSelecionado] = useState({}); // { [livroId]: pessoaId }
+  const [filaNomeNovo, setFilaNomeNovo] = useState({}); // { [livroId]: "nome pra cadastrar na hora" }
+
+  function filaDoLivro(livroId) {
+    return filas.filter((f) => f.livroId === livroId).sort((a, b) => (a.ordem ?? a.criadoEm) - (b.ordem ?? b.criadoEm));
+  }
 
   function alternarTag(lista, setLista, tag) {
     setLista(lista.includes(tag) ? lista.filter((t) => t !== tag) : [...lista, tag]);
@@ -2269,15 +2436,19 @@ function AcervoTab({ livros, emprestimos, categorias, tags, onAdd, onEdit, onRem
   async function buscarCapaNovo() {
     if (!titulo.trim()) return;
     setBuscandoCapa(true);
-    const link = await buscarCapaGoogleBooks(titulo, autor).catch(() => null);
+    setAvisoCapa("");
+    const { link, motivo } = await buscarCapaLivro(titulo, autor);
     if (link) setCapaUrl(link);
+    else setAvisoCapa(motivo || "Nenhuma capa encontrada.");
     setBuscandoCapa(false);
   }
   async function buscarCapaEditar() {
     if (!editTitulo.trim()) return;
     setBuscandoCapaEdit(true);
-    const link = await buscarCapaGoogleBooks(editTitulo, editAutor).catch(() => null);
+    setAvisoCapaEdit("");
+    const { link, motivo } = await buscarCapaLivro(editTitulo, editAutor);
     if (link) setEditCapaUrl(link);
+    else setAvisoCapaEdit(motivo || "Nenhuma capa encontrada.");
     setBuscandoCapaEdit(false);
   }
 
@@ -2289,6 +2460,7 @@ function AcervoTab({ livros, emprestimos, categorias, tags, onAdd, onEdit, onRem
     setEditData(l.dataAquisicao || "");
     setEditCapaUrl(l.capaUrl || "");
     setEditValorSemanal(l.valorSemanal || "");
+    setEditValorSemanaExtra(l.valorSemanaExtra || "");
     setEditLimiteSemanas(l.limiteSemanas || "");
     setEditQuantidade(String(l.quantidade || 1));
     setEditCategoria(l.categoria || "");
@@ -2305,6 +2477,7 @@ function AcervoTab({ livros, emprestimos, categorias, tags, onAdd, onEdit, onRem
       dataAquisicao: editData,
       capaUrl: editCapaUrl,
       valorSemanal: editValorSemanal,
+      valorSemanaExtra: editValorSemanaExtra,
       limiteSemanas: editLimiteSemanas,
       quantidade: editQuantidade,
       categoria: editCategoria,
@@ -2361,11 +2534,16 @@ function AcervoTab({ livros, emprestimos, categorias, tags, onAdd, onEdit, onRem
           </select>
         </div>
         {tags.length > 0 && (
-          <SeletorTags
-            todasTags={tags}
-            selecionadas={tagsSelecionadas}
-            onToggle={(t) => alternarTag(tagsSelecionadas, setTagsSelecionadas, t)}
-          />
+          <details>
+            <summary style={{ fontSize: 12.5, color: COLORS.burgundy, cursor: "pointer" }}>marcar tags</summary>
+            <div style={{ marginTop: 8 }}>
+              <SeletorTags
+                todasTags={tags}
+                selecionadas={tagsSelecionadas}
+                onToggle={(t) => alternarTag(tagsSelecionadas, setTagsSelecionadas, t)}
+              />
+            </div>
+          </details>
         )}
         <label style={{ ...labelStyle, marginBottom: 2 }}>Sinopse (opcional)</label>
         <textarea
@@ -2380,34 +2558,46 @@ function AcervoTab({ livros, emprestimos, categorias, tags, onAdd, onEdit, onRem
           value={linkExterno}
           onChange={(e) => setLinkExterno(e.target.value)}
         />
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <Input
-            type="number"
-            step="0.01"
-            placeholder="Valor semanal (R$)"
-            value={valorSemanal}
-            onChange={(e) => setValorSemanal(e.target.value)}
-            style={{ flex: "1 1 140px" }}
-          />
-          <Input
-            type="number"
-            placeholder="Limite de semanas"
-            value={limiteSemanas}
-            onChange={(e) => setLimiteSemanas(e.target.value)}
-            style={{ flex: "1 1 140px" }}
-          />
-        </div>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <div style={{ flex: "1 1 140px" }}>
-            <label style={{ ...labelStyle, marginBottom: 2, display: "block" }}>Quantas unidades temos</label>
+        <div style={{ display: "flex", gap: 8 }}>
+          <CampoCol label="Valor semanal (semanas iniciais)">
+            <Input
+              type="number"
+              step="0.01"
+              placeholder="R$"
+              value={valorSemanal}
+              onChange={(e) => setValorSemanal(e.target.value)}
+              style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", fontSize: 13 }}
+            />
+          </CampoCol>
+          <CampoCol label="Valor semana extra">
+            <Input
+              type="number"
+              step="0.01"
+              placeholder="R$"
+              value={valorSemanaExtra}
+              onChange={(e) => setValorSemanaExtra(e.target.value)}
+              style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", fontSize: 13 }}
+            />
+          </CampoCol>
+          <CampoCol label="Unidades">
             <Input
               type="number"
               min="1"
               placeholder="1"
               value={quantidade}
               onChange={(e) => setQuantidade(e.target.value)}
+              style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", fontSize: 13 }}
             />
-          </div>
+          </CampoCol>
+          <CampoCol label="Semanas iniciais">
+            <Input
+              type="number"
+              placeholder="semanas"
+              value={limiteSemanas}
+              onChange={(e) => setLimiteSemanas(e.target.value)}
+              style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", fontSize: 13 }}
+            />
+          </CampoCol>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <Input
@@ -2423,6 +2613,7 @@ function AcervoTab({ livros, emprestimos, categorias, tags, onAdd, onEdit, onRem
             {buscandoCapa ? "buscando…" : "🔍 buscar capa"}
           </Button>
         </div>
+        {avisoCapa && <div style={{ fontSize: 12, color: COLORS.inkSoft }}>{avisoCapa}</div>}
         <Button
           style={{ alignSelf: "flex-start" }}
           onClick={() => {
@@ -2433,6 +2624,7 @@ function AcervoTab({ livros, emprestimos, categorias, tags, onAdd, onEdit, onRem
               dataAquisicao,
               capaUrl,
               valorSemanal,
+              valorSemanaExtra,
               limiteSemanas,
               quantidade,
               categoria,
@@ -2447,6 +2639,7 @@ function AcervoTab({ livros, emprestimos, categorias, tags, onAdd, onEdit, onRem
             setDataAquisicao("");
             setCapaUrl("");
             setValorSemanal("");
+            setValorSemanaExtra("");
             setLimiteSemanas("");
             setQuantidade("1");
             setCategoria("");
@@ -2501,16 +2694,59 @@ function AcervoTab({ livros, emprestimos, categorias, tags, onAdd, onEdit, onRem
                         <option key={n} value={n}>{n}</option>
                       ))}
                     </select>
-                    <Input type="number" step="0.01" placeholder="Valor semanal (R$)" value={editValorSemanal} onChange={(e) => setEditValorSemanal(e.target.value)} style={{ flex: "1 1 140px" }} />
-                    <Input type="number" placeholder="Limite semanas" value={editLimiteSemanas} onChange={(e) => setEditLimiteSemanas(e.target.value)} style={{ flex: "1 1 120px" }} />
-                    <Input type="number" min="1" placeholder="Unidades" value={editQuantidade} onChange={(e) => setEditQuantidade(e.target.value)} style={{ flex: "1 1 100px" }} />
+                  </div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <CampoCol label="Valor semanal (semanas iniciais)">
+                      <Input
+                        type="number"
+                        step="0.01"
+                        placeholder="R$"
+                        value={editValorSemanal}
+                        onChange={(e) => setEditValorSemanal(e.target.value)}
+                        style={{ width: "100%", boxSizing: "border-box", padding: "7px 10px", fontSize: 13 }}
+                      />
+                    </CampoCol>
+                    <CampoCol label="Valor semana extra">
+                      <Input
+                        type="number"
+                        step="0.01"
+                        placeholder="R$"
+                        value={editValorSemanaExtra}
+                        onChange={(e) => setEditValorSemanaExtra(e.target.value)}
+                        style={{ width: "100%", boxSizing: "border-box", padding: "7px 10px", fontSize: 13 }}
+                      />
+                    </CampoCol>
+                    <CampoCol label="Unidades">
+                      <Input
+                        type="number"
+                        min="1"
+                        placeholder="1"
+                        value={editQuantidade}
+                        onChange={(e) => setEditQuantidade(e.target.value)}
+                        style={{ width: "100%", boxSizing: "border-box", padding: "7px 10px", fontSize: 13 }}
+                      />
+                    </CampoCol>
+                    <CampoCol label="Semanas iniciais">
+                      <Input
+                        type="number"
+                        placeholder="semanas"
+                        value={editLimiteSemanas}
+                        onChange={(e) => setEditLimiteSemanas(e.target.value)}
+                        style={{ width: "100%", boxSizing: "border-box", padding: "7px 10px", fontSize: 13 }}
+                      />
+                    </CampoCol>
                   </div>
                   {tags.length > 0 && (
-                    <SeletorTags
-                      todasTags={tags}
-                      selecionadas={editTagsSelecionadas}
-                      onToggle={(t) => alternarTag(editTagsSelecionadas, setEditTagsSelecionadas, t)}
-                    />
+                    <details>
+                      <summary style={{ fontSize: 12.5, color: COLORS.burgundy, cursor: "pointer" }}>marcar tags</summary>
+                      <div style={{ marginTop: 8 }}>
+                        <SeletorTags
+                          todasTags={tags}
+                          selecionadas={editTagsSelecionadas}
+                          onToggle={(t) => alternarTag(editTagsSelecionadas, setEditTagsSelecionadas, t)}
+                        />
+                      </div>
+                    </details>
                   )}
                   <label style={{ ...labelStyle, marginBottom: 2 }}>Sinopse (opcional)</label>
                   <textarea
@@ -2533,6 +2769,7 @@ function AcervoTab({ livros, emprestimos, categorias, tags, onAdd, onEdit, onRem
                       {buscandoCapaEdit ? "buscando…" : "🔍 buscar"}
                     </Button>
                   </div>
+                  {avisoCapaEdit && <div style={{ fontSize: 12, color: COLORS.inkSoft }}>{avisoCapaEdit}</div>}
                   <div style={{ display: "flex", gap: 8 }}>
                     <Button style={{ padding: "7px 12px", fontSize: 13 }} onClick={salvarEdicao}>
                       Salvar
@@ -2582,6 +2819,7 @@ function AcervoTab({ livros, emprestimos, categorias, tags, onAdd, onEdit, onRem
                       {l.categoria && l.valorSemanal ? " · " : ""}
                       {l.valorSemanal ? `${fmtMoney(l.valorSemanal)}/semana` : ""}
                       {l.limiteSemanas ? ` · limite ${l.limiteSemanas} sem.` : ""}
+                      {l.valorSemanaExtra ? ` · ${fmtMoney(l.valorSemanaExtra)}/sem. extra` : ""}
                       {quantidade > 1 ? ` · ${quantidade} unidades` : ""}
                     </div>
                     {l.nivel && (
@@ -2650,6 +2888,88 @@ function AcervoTab({ livros, emprestimos, categorias, tags, onAdd, onEdit, onRem
                   </button>
                   <BotaoExcluir label="excluir" onConfirm={() => onRemove(l.id)} />
                 </div>
+              )}
+              {!editando && (
+                <details style={{ marginTop: 8 }}>
+                  <summary style={{ fontSize: 12, color: COLORS.burgundy, cursor: "pointer" }}>
+                    fila de espera{filaDoLivro(l.id).length > 0 ? ` (${filaDoLivro(l.id).length})` : ""}
+                  </summary>
+                  <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
+                    {filaDoLivro(l.id).map((f, i) => {
+                      const p = pessoaById(f.pessoaId);
+                      return (
+                        <div key={f.id} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5 }}>
+                          <span style={{ fontFamily: "'JetBrains Mono', monospace", color: COLORS.inkSoft, width: 20 }}>
+                            {i + 1}º
+                          </span>
+                          <span style={{ flex: 1 }}>{p ? nomeCompleto(p) : "(pessoa removida)"}</span>
+                          <button
+                            onClick={() => onMoverFila(f.id, -1)}
+                            disabled={i === 0}
+                            style={{ background: "none", border: `1px solid ${COLORS.rule}`, borderRadius: 4, padding: "2px 6px", cursor: i === 0 ? "default" : "pointer", opacity: i === 0 ? 0.35 : 1 }}
+                          >
+                            ↑
+                          </button>
+                          <button
+                            onClick={() => onMoverFila(f.id, 1)}
+                            disabled={i === filaDoLivro(l.id).length - 1}
+                            style={{ background: "none", border: `1px solid ${COLORS.rule}`, borderRadius: 4, padding: "2px 6px", cursor: i === filaDoLivro(l.id).length - 1 ? "default" : "pointer", opacity: i === filaDoLivro(l.id).length - 1 ? 0.35 : 1 }}
+                          >
+                            ↓
+                          </button>
+                          <BotaoExcluir label="remover" small onConfirm={() => onRemoverFila(f.id)} />
+                        </div>
+                      );
+                    })}
+                    {filaDoLivro(l.id).length === 0 && (
+                      <div style={{ fontSize: 12, color: COLORS.inkSoft }}>Ninguém esperando esse livro ainda.</div>
+                    )}
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 4 }}>
+                      <select
+                        value={filaSelecionado[l.id] || ""}
+                        onChange={(e) => setFilaSelecionado((prev) => ({ ...prev, [l.id]: e.target.value }))}
+                        style={{ ...inputBase, flex: "1 1 160px", padding: "6px 8px", fontSize: 12.5 }}
+                      >
+                        <option value="">+ pessoa já cadastrada…</option>
+                        {pessoas.map((p) => (
+                          <option key={p.id} value={p.id}>{nomeCompleto(p)}</option>
+                        ))}
+                      </select>
+                      <Button
+                        variant="subtle"
+                        style={{ padding: "6px 10px", fontSize: 12.5 }}
+                        onClick={() => {
+                          if (!filaSelecionado[l.id]) return;
+                          onAdicionarFila(l.id, filaSelecionado[l.id]);
+                          setFilaSelecionado((prev) => ({ ...prev, [l.id]: "" }));
+                        }}
+                      >
+                        Adicionar
+                      </Button>
+                    </div>
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                      <Input
+                        placeholder="ou nome de alguém novo"
+                        value={filaNomeNovo[l.id] || ""}
+                        onChange={(e) => setFilaNomeNovo((prev) => ({ ...prev, [l.id]: e.target.value }))}
+                        style={{ flex: "1 1 160px", padding: "6px 8px", fontSize: 12.5 }}
+                      />
+                      <Button
+                        variant="subtle"
+                        style={{ padding: "6px 10px", fontSize: 12.5 }}
+                        onClick={() => {
+                          const nome = (filaNomeNovo[l.id] || "").trim();
+                          if (!nome) return;
+                          const { nome: primeiro, sobrenome } = separarNome(nome);
+                          onAdicionarFila(l.id, null, { nome: primeiro, sobrenome });
+                          setFilaNomeNovo((prev) => ({ ...prev, [l.id]: "" }));
+                        }}
+                      >
+                        Adicionar
+                      </Button>
+                    </div>
+                  </div>
+                </details>
               )}
             </div>
           );
@@ -2783,11 +3103,13 @@ function PessoasTab({
   const [novoSobrenome, setNovoSobrenome] = useState("");
   const [novoTel, setNovoTel] = useState("");
   const [novoEmail, setNovoEmail] = useState("");
+  const [novoGenero, setNovoGenero] = useState("");
   const [editandoId, setEditandoId] = useState(null);
   const [editNome, setEditNome] = useState("");
   const [editSobrenome, setEditSobrenome] = useState("");
   const [editTel, setEditTel] = useState("");
   const [editEmail, setEditEmail] = useState("");
+  const [editGenero, setEditGenero] = useState("");
   const [historicoAberto, setHistoricoAberto] = useState({});
 
   const resumo = pessoas.map((p) => {
@@ -2805,10 +3127,11 @@ function PessoasTab({
     setEditSobrenome(p.sobrenome || "");
     setEditTel(p.telefone || "");
     setEditEmail(p.email || "");
+    setEditGenero(p.genero || "");
   }
 
   function salvarEdicao() {
-    onUpsert({ nome: editNome, sobrenome: editSobrenome, telefone: editTel, email: editEmail }, editandoId);
+    onUpsert({ nome: editNome, sobrenome: editSobrenome, telefone: editTel, email: editEmail, genero: editGenero }, editandoId);
     setEditandoId(null);
   }
 
@@ -2884,16 +3207,22 @@ function PessoasTab({
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <Input placeholder="Celular com DDD" value={novoTel} onChange={(e) => setNovoTel(e.target.value)} style={{ flex: "1 1 140px" }} />
           <Input placeholder="E-mail (opcional)" value={novoEmail} onChange={(e) => setNovoEmail(e.target.value)} style={{ flex: "1 1 140px" }} />
+          <select value={novoGenero} onChange={(e) => setNovoGenero(e.target.value)} style={{ ...inputBase, flex: "1 1 140px" }}>
+            <option value="">Gênero (opcional)</option>
+            <option value="M">Masculino</option>
+            <option value="F">Feminino</option>
+          </select>
         </div>
         <Button
           style={{ alignSelf: "flex-start" }}
           onClick={() => {
             if (!novoNome.trim()) return;
-            onUpsert({ nome: novoNome.trim(), sobrenome: novoSobrenome.trim(), telefone: novoTel, email: novoEmail });
+            onUpsert({ nome: novoNome.trim(), sobrenome: novoSobrenome.trim(), telefone: novoTel, email: novoEmail, genero: novoGenero });
             setNovoNome("");
             setNovoSobrenome("");
             setNovoTel("");
             setNovoEmail("");
+            setNovoGenero("");
           }}
         >
           Salvar pessoa
@@ -2919,7 +3248,9 @@ function PessoasTab({
                 </div>
               )}
             </div>
-            <div style={{ fontSize: 12, color: COLORS.inkSoft, marginTop: 2 }}>{ativos.length} livro(s) com ela agora</div>
+            <div style={{ fontSize: 12, color: COLORS.inkSoft, marginTop: 2 }}>
+              {ativos.length} livro(s) com {pronomeGenero(p, "ele", "ela", "essa pessoa")} agora
+            </div>
             {ativos.length > 0 && (
               <ul style={{ margin: "8px 0 0", paddingLeft: 18, fontSize: 13.5 }}>
                 {ativos.map((e) => {
@@ -2960,6 +3291,11 @@ function PessoasTab({
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                   <Input placeholder="Celular" value={editTel} onChange={(e) => setEditTel(e.target.value)} style={{ flex: "1 1 130px", padding: "7px 10px", fontSize: 13 }} />
                   <Input placeholder="E-mail" value={editEmail} onChange={(e) => setEditEmail(e.target.value)} style={{ flex: "1 1 130px", padding: "7px 10px", fontSize: 13 }} />
+                  <select value={editGenero} onChange={(e) => setEditGenero(e.target.value)} style={{ ...inputBase, flex: "1 1 130px", padding: "7px 10px", fontSize: 13 }}>
+                    <option value="">Gênero (opcional)</option>
+                    <option value="M">Masculino</option>
+                    <option value="F">Feminino</option>
+                  </select>
                 </div>
                 <div style={{ display: "flex", gap: 8 }}>
                   <Button style={{ padding: "7px 12px", fontSize: 13 }} onClick={salvarEdicao}>
