@@ -2639,11 +2639,11 @@ function AcervoTab({
       >
         <label style={labelStyle}>Cadastrar livro</label>
 
-        {/* 1 — Título · 2 — Autor (obrigatório) */}
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <Input placeholder="Título" value={titulo} onChange={(e) => setTitulo(e.target.value)} style={{ flex: "2 1 160px" }} />
-          <Input placeholder="Autor" value={autor} onChange={(e) => setAutor(e.target.value)} style={{ flex: "2 1 140px" }} />
-        </div>
+        {/* 1 — Título */}
+        <Input placeholder="Título" value={titulo} onChange={(e) => setTitulo(e.target.value)} />
+
+        {/* 2 — Autor (obrigatório) */}
+        <Input placeholder="Autor" value={autor} onChange={(e) => setAutor(e.target.value)} />
 
         {/* 3 — Páginas / Aquisição */}
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -2827,10 +2827,8 @@ function AcervoTab({
             >
               {editando ? (
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                    <Input value={editTitulo} onChange={(e) => setEditTitulo(e.target.value)} style={{ flex: "2 1 140px" }} placeholder="Título" />
-                    <Input value={editAutor} onChange={(e) => setEditAutor(e.target.value)} style={{ flex: "2 1 120px" }} placeholder="Autor" />
-                  </div>
+                  <Input value={editTitulo} onChange={(e) => setEditTitulo(e.target.value)} placeholder="Título" />
+                  <Input value={editAutor} onChange={(e) => setEditAutor(e.target.value)} placeholder="Autor" />
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                     <Input type="number" value={editPaginas} onChange={(e) => setEditPaginas(e.target.value)} style={{ flex: "1 1 100px" }} placeholder="Páginas" />
                     <Input type="date" value={editData} onChange={(e) => setEditData(e.target.value)} style={{ flex: "1 1 140px" }} />
@@ -3747,6 +3745,7 @@ function AjustesTab({
   const [entrandoAdmin, setEntrandoAdmin] = useState(false);
   const [restaurandoId, setRestaurandoId] = useState(null);
   const [restauradoOk, setRestauradoOk] = useState(false);
+  const [erroRestaurar, setErroRestaurar] = useState("");
 
   const [senhaAtualDigitada, setSenhaAtualDigitada] = useState("");
   const [novaSenha, setNovaSenha] = useState("");
@@ -3767,11 +3766,13 @@ function AjustesTab({
   async function handleRestaurar(backup) {
     setRestaurandoId(backup.id);
     setRestauradoOk(false);
+    setErroRestaurar("");
     try {
       await onRestaurarBackup(backup);
       setRestauradoOk(true);
     } catch (e) {
       console.error("Erro ao restaurar backup:", e);
+      setErroRestaurar("Não consegui restaurar esse backup — a senha atual não decifra esses dados (provavelmente foi feito com outra senha). Fala com o suporte antes de tentar de novo.");
     }
     setRestaurandoId(null);
   }
@@ -4215,6 +4216,9 @@ function AjustesTab({
           <div style={{ fontSize: 12.5, color: COLORS.sage }}>
             ✓ Backup restaurado — os dados deste aparelho já foram atualizados.
           </div>
+        )}
+        {erroRestaurar && (
+          <div style={{ fontSize: 12.5, color: COLORS.rust }}>{erroRestaurar}</div>
         )}
       </div>
 
