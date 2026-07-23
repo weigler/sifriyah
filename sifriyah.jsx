@@ -936,7 +936,10 @@ export default function App() {
       }
       setLoaded(true);
     })();
-  }, [cloudConfig, cloudDocId]);
+    // reage também a mudanças no login de admin: a primeira tentativa de leitura pode falhar
+    // (permission-denied) se o app monta antes do admin logar — sem reagir a statusAdminAuth,
+    // "temDadosSalvos" ficaria travado em falso pra sempre, mesmo depois do login funcionar
+  }, [cloudConfig, cloudDocId, statusAdminAuth]);
 
   // recebe atualizações vindas de outros aparelhos em tempo real, seção por seção
   useEffect(() => {
