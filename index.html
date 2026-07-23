@@ -236,6 +236,19 @@ async function obterFirebaseAuth(firebaseConfig) {
   await inicializarFirebase(firebaseConfig);
   return _fbAuth;
 }
+// espera a sessão do Firebase Auth terminar de restaurar (localStorage/indexedDB) antes de
+// deixar o app ler o Firestore — sem isso, a primeira leitura após um refresh pode disparar
+// antes do login persistido "voltar", cair em permission-denied nas regras, e o app achar
+// (errado) que a biblioteca está vazia
+async function aguardarAuthPronto(firebaseConfig) {
+  const auth = await obterFirebaseAuth(firebaseConfig);
+  return new Promise((resolve) => {
+    const cancelar = auth.onAuthStateChanged((user) => {
+      cancelar();
+      resolve(user);
+    });
+  });
+}
 async function entrarComoAdminNuvem(firebaseConfig, email, senha) {
   const auth = await obterFirebaseAuth(firebaseConfig);
   const cred = await auth.signInWithEmailAndPassword(email, senha);
@@ -874,6 +887,7 @@ function App() {
   // busca as seções salvas (nuvem ou local) sem descriptografar — usado só pra saber se existe algo
   async function carregarSecoesBrutas() {
     if (cloudConfig) {
+      await aguardarAuthPronto(cloudConfig);
       const doc = await nuvemLerDoc(cloudConfig, cloudDocId);
       if (!doc) return { secoes: {}, legado: null, semSenha: false };
       const secoes = {};
