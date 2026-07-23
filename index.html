@@ -208,6 +208,24 @@ async function nuvemSalvarPublico(firebaseConfig, docId, dadosPublicos) {
     .set({ ...dadosPublicos, atualizadoEm: Date.now() });
 }
 
+// pré-cadastros enviados pela vitrine pública (sem senha)
+function nuvemOuvirPreCadastros(firebaseConfig, docId, onChange) {
+  inicializarFirebase(firebaseConfig).then((db) => {
+    db.collection("sifriyah_precadastros")
+      .where("biblioteca", "==", docId)
+      .onSnapshot((snap) => {
+        const lista = [];
+        snap.forEach((doc) => lista.push({ id: doc.id, ...doc.data() }));
+        lista.sort((a, b) => (b.criadoEm || 0) - (a.criadoEm || 0));
+        onChange(lista);
+      });
+  });
+}
+async function nuvemRemoverPreCadastro(firebaseConfig, id) {
+  const db = await inicializarFirebase(firebaseConfig);
+  await db.collection("sifriyah_precadastros").doc(id).delete();
+}
+
 function nomeCompleto(p) {
   if (!p) return "";
   return `${p.nome || ""}${p.sobrenome ? " " + p.sobrenome : ""}`.trim();
@@ -224,6 +242,9 @@ function migrarDados(parsed) {
     paginas: null,
     dataAquisicao: null,
     capaUrl: null,
+    valorSemanal: null,
+    limiteSemanas: null,
+    categoria: "",
     ...l,
   }));
 
@@ -246,7 +267,14 @@ function migrarDados(parsed) {
     emprestimos: parsed.emprestimos || [],
     pessoas,
     cobrancas: parsed.cobrancas || [],
-    config: parsed.config || { pix: "", recebedor: "" },
+    config: {
+      pix: "",
+      recebedor: "",
+      whatsappContato: "",
+      linkVitrine: "",
+      promocao: { ativa: false, descricao: "", validoAte: "" },
+      ...(parsed.config || {}),
+    },
   };
 }
 
@@ -400,7 +428,13 @@ function App() {
   const [emprestimos, setEmprestimos] = useState([]);
   const [pessoas, setPessoas] = useState([]); // [{id, nome, sobrenome, telefone, email}]
   const [cobrancas, setCobrancas] = useState([]); // [{id, emprestimoId, tipo, data}]
-  const [config, setConfig] = useState({ pix: "", recebedor: "" });
+  const [config, setConfig] = useState({
+    pix: "",
+    recebedor: "",
+    whatsappContato: "",
+    linkVitrine: "",
+    promocao: { ativa: false, descricao: "", validoAte: "" },
+  });
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
 
@@ -475,6 +509,21 @@ function App() {
     });
   }, [cloudConfig, cloudDocId, unlocked, senhaAtual]);
 
+  // ---- Pré-cadastros enviados pela vitrine pública ----
+  const [preCadastros, setPreCadastros] = useState([]);
+  useEffect(() => {
+    if (!cloudConfig || !unlocked) return;
+    nuvemOuvirPreCadastros(cloudConfig, cloudDocId, setPreCadastros);
+  }, [cloudConfig, cloudDocId, unlocked]);
+
+  function importarPreCadastro(pc) {
+    upsertPessoa({ nome: pc.nome || "", sobrenome: pc.sobrenome || "", telefone: pc.telefone || "", email: pc.email || "" });
+    nuvemRemoverPreCadastro(cloudConfig, pc.id).catch(() => {});
+  }
+  function descartarPreCadastro(pc) {
+    nuvemRemoverPreCadastro(cloudConfig, pc.id).catch(() => {});
+  }
+
   async function desbloquear(senha) {
     const blob = await backendGet();
     if (!blob) {
@@ -510,7 +559,7 @@ function App() {
     setEmprestimos([]);
     setPessoas([]);
     setCobrancas([]);
-    setConfig({ pix: "", recebedor: "" });
+    setConfig({ pix: "", recebedor: "", whatsappContato: "", linkVitrine: "", promocao: { ativa: false, descricao: "", validoAte: "" } });
     setSenhaAtual("");
     setUnlocked(false);
     setTemDadosSalvos(false);
@@ -529,6 +578,7 @@ function App() {
           const dadosPublicos = {
             bibliotecaNome: APP_NAME,
             whatsappContato: config.whatsappContato || "",
+            promocao: config.promocao?.ativa ? config.promocao : null,
             livros: livros.map((l) => {
               const ativo = emprestimosAtivos.find((e) => e.livroId === l.id);
               return {
@@ -536,6 +586,8 @@ function App() {
                 titulo: l.titulo,
                 autor: l.autor || "",
                 capaUrl: l.capaUrl || null,
+                paginas: l.paginas || null,
+                categoria: l.categoria || "",
                 disponivel: !ativo,
                 proximaData: ativo ? ativo.prazo : null,
               };
@@ -585,6 +637,9 @@ function App() {
         paginas: dados.paginas ? parseInt(dados.paginas, 10) : null,
         dataAquisicao: dados.dataAquisicao || null,
         capaUrl: dados.capaUrl || null,
+        valorSemanal: dados.valorSemanal ? parseFloat(dados.valorSemanal) : null,
+        limiteSemanas: dados.limiteSemanas ? parseInt(dados.limiteSemanas, 10) : null,
+        categoria: (dados.categoria || "").trim(),
       },
     ]);
   }
@@ -600,6 +655,9 @@ function App() {
               paginas: dados.paginas ? parseInt(dados.paginas, 10) : null,
               dataAquisicao: dados.dataAquisicao || null,
               capaUrl: dados.capaUrl || null,
+              valorSemanal: dados.valorSemanal ? parseFloat(dados.valorSemanal) : null,
+              limiteSemanas: dados.limiteSemanas ? parseInt(dados.limiteSemanas, 10) : null,
+              categoria: (dados.categoria || "").trim(),
             }
           : l
       )
@@ -848,6 +906,9 @@ function App() {
             totalPago={totalPago}
             onUpsert={upsertPessoa}
             onRemove={removePessoa}
+            preCadastros={preCadastros}
+            onImportarPreCadastro={importarPreCadastro}
+            onDescartarPreCadastro={descartarPreCadastro}
           />
         )}
         {tab === "financeiro" && (
@@ -947,15 +1008,39 @@ function EmprestimosTab({
     }" — o prazo era ${fmtDate(emp.prazo)}. Você já terminou ou quer renovar por mais um tempo? Me avisa 🙂`;
   }
 
-  const lista = emprestimos.filter((e) => {
-    if (filtro === "ativos") return !e.devolvido;
-    if (filtro === "devolvidos") return e.devolvido;
-    return true;
-  });
+  const lista = emprestimos
+    .filter((e) => {
+      if (filtro === "ativos") return !e.devolvido;
+      if (filtro === "devolvidos") return e.devolvido;
+      return true;
+    })
+    .sort((a, b) => {
+      const pa = statusOf(a) === "atrasado" ? 0 : 1;
+      const pb = statusOf(b) === "atrasado" ? 0 : 1;
+      return pa - pb;
+    });
+
+  const qtdAtrasados = emprestimos.filter((e) => !e.devolvido && statusOf(e) === "atrasado").length;
 
   return (
     <div>
       <Section eyebrow="Registro de saída" title="Empréstimos ativos">
+        {qtdAtrasados > 0 && (
+          <div
+            style={{
+              background: "#F7E3DA",
+              border: `1.5px solid ${COLORS.rust}`,
+              borderRadius: 8,
+              padding: "10px 14px",
+              marginBottom: 14,
+              fontSize: 13,
+              color: COLORS.rust,
+              fontWeight: 600,
+            }}
+          >
+            ⚠️ {qtdAtrasados} empréstimo(s) atrasado(s) — aparecem primeiro na lista abaixo.
+          </div>
+        )}
         <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
           {["ativos", "devolvidos", "todos"].map((f) => (
             <button
@@ -998,6 +1083,22 @@ function EmprestimosTab({
               gap: 10,
             }}
           >
+            {config.promocao?.ativa && config.promocao?.descricao && (
+              <div
+                style={{
+                  background: "#FBF3DC",
+                  border: `1px solid ${COLORS.gold}`,
+                  borderRadius: 8,
+                  padding: "8px 12px",
+                  fontSize: 13,
+                  color: COLORS.ink,
+                }}
+              >
+                🎉 <b>Promoção ativa:</b> {config.promocao.descricao}
+                {config.promocao.validoAte ? ` (até ${fmtDate(config.promocao.validoAte)})` : ""}
+              </div>
+            )}
+
             <label style={labelStyle}>Livro</label>
             <select value={livroId} onChange={(e) => setLivroId(e.target.value)} style={inputBase}>
               <option value="">Selecione…</option>
@@ -1012,6 +1113,17 @@ function EmprestimosTab({
                 Nenhum livro disponível. Cadastre um no Acervo primeiro.
               </div>
             )}
+            {livroId && (() => {
+              const l = livroById(livroId);
+              if (!l || (!l.valorSemanal && !l.limiteSemanas)) return null;
+              return (
+                <div style={{ fontSize: 12.5, color: COLORS.inkSoft, fontFamily: "'JetBrains Mono', monospace" }}>
+                  {l.valorSemanal ? `${fmtMoney(l.valorSemanal)}/semana` : ""}
+                  {l.valorSemanal && l.limiteSemanas ? " · " : ""}
+                  {l.limiteSemanas ? `limite de ${l.limiteSemanas} semana(s) pra esse livro` : ""}
+                </div>
+              );
+            })()}
 
             <label style={labelStyle}>Quem está pegando</label>
             <select
@@ -1221,6 +1333,9 @@ function AcervoTab({ livros, emprestimos, onAdd, onEdit, onRemove }) {
   const [paginas, setPaginas] = useState("");
   const [dataAquisicao, setDataAquisicao] = useState("");
   const [capaUrl, setCapaUrl] = useState("");
+  const [valorSemanal, setValorSemanal] = useState("");
+  const [limiteSemanas, setLimiteSemanas] = useState("");
+  const [categoria, setCategoria] = useState("");
   const [buscandoCapa, setBuscandoCapa] = useState(false);
   const [editandoId, setEditandoId] = useState(null);
   const [editTitulo, setEditTitulo] = useState("");
@@ -1228,6 +1343,9 @@ function AcervoTab({ livros, emprestimos, onAdd, onEdit, onRemove }) {
   const [editPaginas, setEditPaginas] = useState("");
   const [editData, setEditData] = useState("");
   const [editCapaUrl, setEditCapaUrl] = useState("");
+  const [editValorSemanal, setEditValorSemanal] = useState("");
+  const [editLimiteSemanas, setEditLimiteSemanas] = useState("");
+  const [editCategoria, setEditCategoria] = useState("");
   const [buscandoCapaEdit, setBuscandoCapaEdit] = useState(false);
 
   async function buscarCapaNovo() {
@@ -1252,6 +1370,9 @@ function AcervoTab({ livros, emprestimos, onAdd, onEdit, onRemove }) {
     setEditPaginas(l.paginas || "");
     setEditData(l.dataAquisicao || "");
     setEditCapaUrl(l.capaUrl || "");
+    setEditValorSemanal(l.valorSemanal || "");
+    setEditLimiteSemanas(l.limiteSemanas || "");
+    setEditCategoria(l.categoria || "");
   }
   function salvarEdicao() {
     onEdit(editandoId, {
@@ -1260,6 +1381,9 @@ function AcervoTab({ livros, emprestimos, onAdd, onEdit, onRemove }) {
       paginas: editPaginas,
       dataAquisicao: editData,
       capaUrl: editCapaUrl,
+      valorSemanal: editValorSemanal,
+      limiteSemanas: editLimiteSemanas,
+      categoria: editCategoria,
     });
     setEditandoId(null);
   }
@@ -1295,6 +1419,24 @@ function AcervoTab({ livros, emprestimos, onAdd, onEdit, onRemove }) {
             <label style={{ ...labelStyle, marginBottom: 2, display: "block" }}>Dia de aquisição</label>
             <Input type="date" value={dataAquisicao} onChange={(e) => setDataAquisicao(e.target.value)} />
           </div>
+          <Input placeholder="Categoria (ex: teologia)" value={categoria} onChange={(e) => setCategoria(e.target.value)} style={{ flex: "1 1 140px" }} />
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <Input
+            type="number"
+            step="0.01"
+            placeholder="Valor semanal (R$)"
+            value={valorSemanal}
+            onChange={(e) => setValorSemanal(e.target.value)}
+            style={{ flex: "1 1 140px" }}
+          />
+          <Input
+            type="number"
+            placeholder="Limite de semanas"
+            value={limiteSemanas}
+            onChange={(e) => setLimiteSemanas(e.target.value)}
+            style={{ flex: "1 1 140px" }}
+          />
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <Input
@@ -1313,12 +1455,15 @@ function AcervoTab({ livros, emprestimos, onAdd, onEdit, onRemove }) {
         <Button
           style={{ alignSelf: "flex-start" }}
           onClick={() => {
-            onAdd({ titulo, autor, paginas, dataAquisicao, capaUrl });
+            onAdd({ titulo, autor, paginas, dataAquisicao, capaUrl, valorSemanal, limiteSemanas, categoria });
             setTitulo("");
             setAutor("");
             setPaginas("");
             setDataAquisicao("");
             setCapaUrl("");
+            setValorSemanal("");
+            setLimiteSemanas("");
+            setCategoria("");
           }}
         >
           Adicionar ao acervo
@@ -1350,6 +1495,11 @@ function AcervoTab({ livros, emprestimos, onAdd, onEdit, onRemove }) {
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                     <Input type="number" value={editPaginas} onChange={(e) => setEditPaginas(e.target.value)} style={{ flex: "1 1 100px" }} placeholder="Páginas" />
                     <Input type="date" value={editData} onChange={(e) => setEditData(e.target.value)} style={{ flex: "1 1 140px" }} />
+                  </div>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <Input placeholder="Categoria" value={editCategoria} onChange={(e) => setEditCategoria(e.target.value)} style={{ flex: "1 1 130px" }} />
+                    <Input type="number" step="0.01" placeholder="Valor semanal (R$)" value={editValorSemanal} onChange={(e) => setEditValorSemanal(e.target.value)} style={{ flex: "1 1 140px" }} />
+                    <Input type="number" placeholder="Limite semanas" value={editLimiteSemanas} onChange={(e) => setEditLimiteSemanas(e.target.value)} style={{ flex: "1 1 120px" }} />
                   </div>
                   <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                     <Input placeholder="Link da capa" value={editCapaUrl} onChange={(e) => setEditCapaUrl(e.target.value)} style={{ flex: 1 }} />
@@ -1404,6 +1554,12 @@ function AcervoTab({ livros, emprestimos, onAdd, onEdit, onRemove }) {
                       {l.paginas && l.dataAquisicao ? " · " : ""}
                       {l.dataAquisicao ? `adquirido em ${fmtDate(l.dataAquisicao)}` : ""}
                     </div>
+                    <div style={{ fontSize: 11.5, color: COLORS.gold, fontFamily: "'JetBrains Mono', monospace", marginTop: 2 }}>
+                      {l.categoria ? `${l.categoria}` : ""}
+                      {l.categoria && l.valorSemanal ? " · " : ""}
+                      {l.valorSemanal ? `${fmtMoney(l.valorSemanal)}/semana` : ""}
+                      {l.limiteSemanas ? ` · limite ${l.limiteSemanas} sem.` : ""}
+                    </div>
                   </div>
                   <span
                     style={{
@@ -1443,7 +1599,17 @@ function AcervoTab({ livros, emprestimos, onAdd, onEdit, onRemove }) {
 }
 
 // ---------------- Pessoas ----------------
-function PessoasTab({ pessoas, emprestimos, livroById, totalPago, onUpsert, onRemove }) {
+function PessoasTab({
+  pessoas,
+  emprestimos,
+  livroById,
+  totalPago,
+  onUpsert,
+  onRemove,
+  preCadastros = [],
+  onImportarPreCadastro,
+  onDescartarPreCadastro,
+}) {
   const [novoNome, setNovoNome] = useState("");
   const [novoSobrenome, setNovoSobrenome] = useState("");
   const [novoTel, setNovoTel] = useState("");
@@ -1453,13 +1619,15 @@ function PessoasTab({ pessoas, emprestimos, livroById, totalPago, onUpsert, onRe
   const [editSobrenome, setEditSobrenome] = useState("");
   const [editTel, setEditTel] = useState("");
   const [editEmail, setEditEmail] = useState("");
+  const [historicoAberto, setHistoricoAberto] = useState({});
 
   const resumo = pessoas.map((p) => {
     const dela = emprestimos.filter((e) => e.pessoaId === p.id);
     const combinado = dela.reduce((s, e) => s + (e.valorCombinado || 0), 0);
     const pago = dela.reduce((s, e) => s + totalPago(e), 0);
     const ativos = dela.filter((e) => !e.devolvido);
-    return { pessoa: p, combinado, pago, saldo: combinado - pago, ativos };
+    const historico = dela.filter((e) => e.devolvido).sort((a, b) => (a.dataDevolucao < b.dataDevolucao ? 1 : -1));
+    return { pessoa: p, combinado, pago, saldo: combinado - pago, ativos, historico };
   });
 
   function abrirEdicao(p) {
@@ -1477,6 +1645,56 @@ function PessoasTab({ pessoas, emprestimos, livroById, totalPago, onUpsert, onRe
 
   return (
     <Section eyebrow="Contas e contatos" title="Pessoas">
+      {preCadastros.length > 0 && (
+        <div
+          style={{
+            background: "#FBF3DC",
+            border: `1.5px solid ${COLORS.gold}`,
+            borderRadius: 10,
+            padding: 16,
+            marginBottom: 20,
+            display: "flex",
+            flexDirection: "column",
+            gap: 10,
+          }}
+        >
+          <div style={{ fontFamily: "'Playfair Display', serif", fontWeight: 700, fontSize: 16 }}>
+            📥 Pré-cadastros recebidos ({preCadastros.length})
+          </div>
+          <div style={{ fontSize: 12.5, color: COLORS.inkSoft }}>
+            Pessoas que se cadastraram sozinhas pela vitrine pública. Revise antes de adicionar.
+          </div>
+          {preCadastros.map((pc) => (
+            <div
+              key={pc.id}
+              style={{
+                background: "#fff",
+                border: `1px solid ${COLORS.rule}`,
+                borderRadius: 8,
+                padding: "10px 12px",
+                display: "flex",
+                alignItems: "center",
+                gap: 10,
+                flexWrap: "wrap",
+              }}
+            >
+              <div style={{ flex: 1, minWidth: 160 }}>
+                <b>{pc.nome} {pc.sobrenome}</b>
+                <div style={{ fontSize: 12.5, color: COLORS.inkSoft }}>
+                  {pc.telefone || "sem celular"}{pc.email ? " · " + pc.email : ""}
+                </div>
+              </div>
+              <Button style={{ padding: "6px 12px", fontSize: 12.5 }} onClick={() => onImportarPreCadastro(pc)}>
+                Adicionar como pessoa
+              </Button>
+              <Button variant="ghost" style={{ padding: "6px 12px", fontSize: 12.5 }} onClick={() => onDescartarPreCadastro(pc)}>
+                Descartar
+              </Button>
+            </div>
+          ))}
+        </div>
+      )}
+
       <div
         style={{
           background: COLORS.card,
@@ -1515,7 +1733,7 @@ function PessoasTab({ pessoas, emprestimos, livroById, totalPago, onUpsert, onRe
 
       {resumo.length === 0 && <EmptyState text="Ninguém cadastrado ainda." />}
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        {resumo.map(({ pessoa: p, combinado, pago, saldo, ativos }) => (
+        {resumo.map(({ pessoa: p, combinado, pago, saldo, ativos, historico }) => (
           <div key={p.id} style={{ background: COLORS.card, border: `1.5px solid ${COLORS.rule}`, borderRadius: 10, padding: 16 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
               <div style={{ fontFamily: "'Playfair Display', serif", fontWeight: 700, fontSize: 17 }}>{nomeCompleto(p)}</div>
@@ -1540,6 +1758,28 @@ function PessoasTab({ pessoas, emprestimos, livroById, totalPago, onUpsert, onRe
                   return <li key={e.id}>{l ? l.titulo : "(livro removido)"}</li>;
                 })}
               </ul>
+            )}
+            {historico.length > 0 && (
+              <div style={{ marginTop: 8 }}>
+                <button
+                  onClick={() => setHistoricoAberto((prev) => ({ ...prev, [p.id]: !prev[p.id] }))}
+                  style={{ background: "none", border: "none", color: COLORS.burgundy, cursor: "pointer", fontSize: 12.5, textDecoration: "underline", padding: 0 }}
+                >
+                  {historicoAberto[p.id] ? "ocultar" : "ver"} histórico de leitura ({historico.length} livro{historico.length > 1 ? "s" : ""})
+                </button>
+                {historicoAberto[p.id] && (
+                  <ul style={{ margin: "8px 0 0", paddingLeft: 18, fontSize: 13, color: COLORS.inkSoft }}>
+                    {historico.map((e) => {
+                      const l = livroById(e.livroId);
+                      return (
+                        <li key={e.id}>
+                          {l ? l.titulo : "(livro removido)"} <span style={{ fontSize: 11.5 }}>· devolvido em {fmtDate(e.dataDevolucao)}</span>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </div>
             )}
 
             {editandoId === p.id ? (
@@ -1602,9 +1842,73 @@ function FinanceiroTab({ emprestimos, cobrancas, pessoaById, livroById, totalPag
 
   const rotuloTipo = { cobranca: "cobrança enviada", lembrete: "lembrete de prazo", sms: "cobrança por SMS" };
 
+  const contagemPorLivro = {};
+  emprestimos.forEach((e) => {
+    contagemPorLivro[e.livroId] = (contagemPorLivro[e.livroId] || 0) + 1;
+  });
+  const ranking = Object.entries(contagemPorLivro)
+    .map(([livroId, qtd]) => ({ livro: livroById(livroId), qtd }))
+    .filter((r) => r.livro)
+    .sort((a, b) => b.qtd - a.qtd)
+    .slice(0, 5);
+
+  function exportarPDF() {
+    const janela = window.open("", "_blank");
+    if (!janela) {
+      alert("O navegador bloqueou a janela de impressão. Permita pop-ups pra esse site e tente de novo.");
+      return;
+    }
+    const linhasPagamentos = pagamentos
+      .map((p) => {
+        const pessoa = pessoaById(p.emprestimo.pessoaId);
+        const livro = livroById(p.emprestimo.livroId);
+        return `<tr><td>${fmtDate(p.data)}</td><td>${pessoa ? nomeCompleto(pessoa) : "—"}</td><td>${
+          livro ? livro.titulo : "—"
+        }</td><td style="text-align:right">${fmtMoney(p.valor)}</td></tr>`;
+      })
+      .join("");
+    const linhasRanking = ranking
+      .map((r) => `<tr><td>${r.livro.titulo}</td><td style="text-align:right">${r.qtd}x</td></tr>`)
+      .join("");
+
+    janela.document.write(`
+      <html><head><meta charset="utf-8"><title>Relatório financeiro · Sifriyah</title>
+      <style>
+        body { font-family: Georgia, serif; color: #2B2118; padding: 32px; }
+        h1 { font-size: 22px; margin-bottom: 2px; }
+        .sub { color: #5B4E3F; font-size: 12px; margin-bottom: 24px; }
+        h2 { font-size: 15px; border-bottom: 1px solid #D8CBB0; padding-bottom: 4px; margin-top: 28px; }
+        table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+        td, th { padding: 6px 8px; border-bottom: 1px solid #eee; text-align: left; }
+        .totais { display: flex; gap: 24px; margin-top: 8px; }
+        .totais div { font-size: 13px; }
+        .totais b { display: block; font-size: 17px; }
+      </style></head><body>
+      <h1>Sifriyah · Relatório financeiro</h1>
+      <div class="sub">Gerado em ${fmtDate(todayISO())}</div>
+      <div class="totais">
+        <div>Combinado (todos)<b>${fmtMoney(totalCombinado)}</b></div>
+        <div>Recebido<b>${fmtMoney(totalRecebido)}</b></div>
+        <div>Pendente<b>${fmtMoney(totalPendente)}</b></div>
+      </div>
+      <h2>Livros mais emprestados</h2>
+      <table>${linhasRanking || "<tr><td>Sem dados ainda.</td></tr>"}</table>
+      <h2>Pagamentos recebidos</h2>
+      <table><tr><th>Data</th><th>Pessoa</th><th>Livro</th><th style="text-align:right">Valor</th></tr>${
+        linhasPagamentos || "<tr><td colspan=4>Sem pagamentos ainda.</td></tr>"
+      }</table>
+      </body></html>
+    `);
+    janela.document.close();
+    setTimeout(() => janela.print(), 300);
+  }
+
   return (
     <div>
       <Section eyebrow="Caixa" title="Financeiro">
+        <Button variant="subtle" style={{ marginBottom: 16 }} onClick={exportarPDF}>
+          🖨️ Exportar relatório (PDF)
+        </Button>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 24 }}>
           {[
             { label: "combinado (todos)", valor: totalCombinado, cor: COLORS.ink },
@@ -1631,6 +1935,32 @@ function FinanceiroTab({ emprestimos, cobrancas, pessoaById, livroById, totalPag
           ))}
         </div>
       </Section>
+
+      {ranking.length > 0 && (
+        <Section eyebrow="Ranking" title="Livros mais emprestados">
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {ranking.map((r, i) => (
+              <div
+                key={r.livro.id}
+                style={{
+                  background: COLORS.card,
+                  border: `1px solid ${COLORS.rule}`,
+                  borderRadius: 8,
+                  padding: "9px 14px",
+                  display: "flex",
+                  justifyContent: "space-between",
+                  fontSize: 13.5,
+                }}
+              >
+                <span>{i + 1}. {r.livro.titulo}</span>
+                <span style={{ fontFamily: "'JetBrains Mono', monospace", color: COLORS.gold, fontWeight: 600 }}>
+                  {r.qtd}x
+                </span>
+              </div>
+            ))}
+          </div>
+        </Section>
+      )}
 
       <Section eyebrow="Histórico" title="Pagamentos recebidos">
         {pagamentos.length === 0 && <EmptyState text="Nenhum pagamento registrado ainda." />}
@@ -1711,9 +2041,23 @@ function AjustesTab({ config, onChange, cloudConfig, cloudStatus, onConfigurarNu
   const [pix, setPix] = useState(config.pix || "");
   const [recebedor, setRecebedor] = useState(config.recebedor || "");
   const [whatsappContato, setWhatsappContato] = useState(config.whatsappContato || "");
+  const [linkVitrine, setLinkVitrine] = useState(config.linkVitrine || "");
+  const [promoAtiva, setPromoAtiva] = useState(config.promocao?.ativa || false);
+  const [promoDescricao, setPromoDescricao] = useState(config.promocao?.descricao || "");
+  const [promoValidoAte, setPromoValidoAte] = useState(config.promocao?.validoAte || "");
   const [colado, setColado] = useState("");
   const [docId, setDocId] = useState(cloudConfig?.docId || "principal");
   const [erroNuvem, setErroNuvem] = useState("");
+
+  function salvarGeral() {
+    onChange({
+      pix,
+      recebedor,
+      whatsappContato,
+      linkVitrine,
+      promocao: { ativa: promoAtiva, descricao: promoDescricao, validoAte: promoValidoAte },
+    });
+  }
 
   function ativarNuvem() {
     setErroNuvem("");
@@ -1754,8 +2098,39 @@ function AjustesTab({ config, onChange, cloudConfig, cloudStatus, onConfigurarNu
         <Input value={recebedor} onChange={(e) => setRecebedor(e.target.value)} placeholder="ex: Weigler" />
         <label style={labelStyle}>Seu WhatsApp (usado na vitrine pública, pra reservas)</label>
         <Input value={whatsappContato} onChange={(e) => setWhatsappContato(e.target.value)} placeholder="(11) 91234-5678" />
-        <Button style={{ alignSelf: "flex-start" }} onClick={() => onChange({ pix, recebedor, whatsappContato })}>
+        <Button style={{ alignSelf: "flex-start" }} onClick={salvarGeral}>
           Salvar
+        </Button>
+      </div>
+
+      <div
+        style={{
+          background: COLORS.card,
+          border: `1.5px solid ${COLORS.rule}`,
+          borderRadius: 10,
+          padding: 16,
+          marginTop: 16,
+          display: "flex",
+          flexDirection: "column",
+          gap: 10,
+        }}
+      >
+        <div style={{ fontFamily: "'Playfair Display', serif", fontWeight: 700, fontSize: 16 }}>
+          Promoção
+        </div>
+        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13.5 }}>
+          <input type="checkbox" checked={promoAtiva} onChange={(e) => setPromoAtiva(e.target.checked)} />
+          Promoção ativa (aparece pra você ao criar um empréstimo, e na vitrine pública)
+        </label>
+        <Input
+          placeholder="ex: 50% de desconto em livros de teologia esse mês"
+          value={promoDescricao}
+          onChange={(e) => setPromoDescricao(e.target.value)}
+        />
+        <label style={labelStyle}>Válida até (opcional)</label>
+        <Input type="date" value={promoValidoAte} onChange={(e) => setPromoValidoAte(e.target.value)} />
+        <Button style={{ alignSelf: "flex-start" }} onClick={salvarGeral}>
+          Salvar promoção
         </Button>
       </div>
 
@@ -1782,6 +2157,35 @@ function AjustesTab({ config, onChange, cloudConfig, cloudStatus, onConfigurarNu
           <div style={{ fontSize: 12.5, color: COLORS.inkSoft }}>
             Código da biblioteca pra colar no arquivo <code>catalogo.html</code>: <b>{cloudConfig.docId}</b>
           </div>
+
+          <label style={labelStyle}>Link da vitrine (cole aqui pra gerar o QR code)</label>
+          <Input
+            value={linkVitrine}
+            onChange={(e) => setLinkVitrine(e.target.value)}
+            placeholder="https://weigler.github.io/sifriyah/catalogo.html"
+          />
+          <Button style={{ alignSelf: "flex-start" }} onClick={salvarGeral}>
+            Salvar link
+          </Button>
+          {linkVitrine && (
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 6, marginTop: 6 }}>
+              <img
+                src={`https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(linkVitrine)}`}
+                alt="QR code da vitrine pública"
+                style={{ borderRadius: 8, border: `1.5px solid ${COLORS.rule}` }}
+                width={180}
+                height={180}
+              />
+              <a
+                href={`https://api.qrserver.com/v1/create-qr-code/?size=600x600&data=${encodeURIComponent(linkVitrine)}`}
+                target="_blank"
+                rel="noreferrer"
+                style={{ fontSize: 12.5, color: COLORS.burgundy }}
+              >
+                abrir em alta resolução pra imprimir
+              </a>
+            </div>
+          )}
         </div>
       )}
 

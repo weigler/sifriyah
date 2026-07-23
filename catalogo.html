@@ -36,9 +36,33 @@
     margin: 0;
   }
   #busca {
-    max-width: 640px;
+    max-width: 720px;
     margin: 20px auto 0;
     padding: 0 16px;
+    display: flex;
+    gap: 8px;
+  }
+  #busca input { flex: 2; }
+  #busca select {
+    flex: 1;
+    font-family: 'Source Serif 4', Georgia, serif;
+    font-size: 15px;
+    padding: 10px 12px;
+    border-radius: 6px;
+    border: 1.5px solid #D8CBB0;
+    background: #fff;
+  }
+  #promoBanner {
+    max-width: 720px;
+    margin: 16px auto 0;
+    padding: 0 16px;
+  }
+  #promoBanner .caixa {
+    background: #FBF3DC;
+    border: 1.5px solid #B8933E;
+    border-radius: 10px;
+    padding: 12px 16px;
+    font-size: 13.5px;
   }
   #busca input {
     width: 100%;
@@ -51,53 +75,52 @@
     box-sizing: border-box;
   }
   #lista {
-    max-width: 640px;
+    max-width: 720px;
     margin: 16px auto 0;
     padding: 0 16px;
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 16px;
   }
   .livro {
     background: #FBF7EC;
     border: 1.5px solid #D8CBB0;
     border-radius: 10px;
-    padding: 16px;
+    padding: 14px;
     display: flex;
-    gap: 14px;
-    align-items: center;
+    flex-direction: column;
+    gap: 10px;
   }
   .livro .capa {
-    width: 48px;
-    height: 68px;
+    width: 100%;
+    height: 220px;
     object-fit: cover;
-    border-radius: 4px;
+    border-radius: 6px;
     border: 1px solid #D8CBB0;
-    flex-shrink: 0;
   }
   .livro .capa-vazia {
-    width: 48px;
-    height: 68px;
-    border-radius: 4px;
+    width: 100%;
+    height: 220px;
+    border-radius: 6px;
     border: 1px solid #D8CBB0;
     background: #F5EFE0;
-    flex-shrink: 0;
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 20px;
+    font-size: 40px;
     opacity: 0.4;
   }
   .livro .info { flex: 1; min-width: 0; }
   .livro .titulo {
     font-family: 'Playfair Display', Georgia, serif;
     font-weight: 700;
-    font-size: 17px;
+    font-size: 16px;
+    line-height: 1.25;
   }
-  .livro .autor { font-size: 13px; color: #5B4E3F; }
+  .livro .autor { font-size: 12.5px; color: #5B4E3F; margin-top: 2px; }
   .livro .status {
     font-family: 'JetBrains Mono', monospace;
-    font-size: 11.5px;
+    font-size: 11px;
     margin-top: 6px;
   }
   .status.disponivel { color: #4B6B4A; }
@@ -114,14 +137,58 @@
     color: #fff;
     text-decoration: none;
     white-space: nowrap;
-    display: inline-block;
+    display: block;
+    text-align: center;
   }
   .vazio, .erro {
+    grid-column: 1 / -1;
     text-align: center;
     color: #5B4E3F;
     padding: 40px 20px;
     font-size: 14px;
   }
+  #precadastro {
+    max-width: 480px;
+    margin: 40px auto 0;
+    padding: 0 16px;
+  }
+  #precadastro .caixa {
+    background: #FBF7EC;
+    border: 1.5px solid #D8CBB0;
+    border-radius: 10px;
+    padding: 20px;
+  }
+  #precadastro h2 {
+    font-family: 'Playfair Display', Georgia, serif;
+    font-size: 18px;
+    margin: 0 0 4px;
+  }
+  #precadastro p { font-size: 13px; color: #5B4E3F; margin: 0 0 14px; }
+  #precadastro input {
+    width: 100%;
+    font-family: 'Source Serif 4', Georgia, serif;
+    font-size: 14px;
+    padding: 9px 11px;
+    border-radius: 6px;
+    border: 1.5px solid #D8CBB0;
+    background: #fff;
+    box-sizing: border-box;
+    margin-bottom: 8px;
+  }
+  #precadastro .linha { display: flex; gap: 8px; }
+  #precadastro .linha input { flex: 1; }
+  #precadastro button {
+    font-family: 'Source Serif 4', Georgia, serif;
+    font-weight: 600;
+    font-size: 14px;
+    padding: 10px 16px;
+    border-radius: 6px;
+    border: none;
+    cursor: pointer;
+    background: #6B2737;
+    color: #fff;
+  }
+  #precadastroMsg { font-size: 13px; margin-top: 10px; }
 </style>
 </head>
 <body>
@@ -132,13 +199,34 @@
   <div style="font-size:13px; opacity:0.75; margin-top:4px;">livros disponíveis pra empréstimo</div>
 </header>
 
+<div id="promoBanner"></div>
+
 <div id="busca">
   <input type="text" id="campoBusca" placeholder="Buscar por título ou autor…">
+  <select id="filtroCategoria">
+    <option value="">Todas as categorias</option>
+  </select>
 </div>
 
 <div id="lista">
   <div class="vazio">Carregando acervo…</div>
 </div>
+
+<div id="precadastro">
+  <div class="caixa">
+    <h2>Ainda não é cadastrado(a)?</h2>
+    <p>Deixe seus dados aqui pra facilitar o próximo empréstimo — não precisa esperar pra reservar um livro.</p>
+    <div class="linha">
+      <input type="text" id="pcNome" placeholder="Nome">
+      <input type="text" id="pcSobrenome" placeholder="Sobrenome">
+    </div>
+    <input type="text" id="pcTelefone" placeholder="Celular com DDD">
+    <input type="email" id="pcEmail" placeholder="E-mail (opcional)">
+    <button id="pcEnviar">Enviar meus dados</button>
+    <div id="precadastroMsg"></div>
+  </div>
+</div>
+
 
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore-compat.js"></script>
@@ -161,6 +249,7 @@ const DOC_ID = "principal";
 let todosLivros = [];
 let whatsappContato = "";
 let bibliotecaNome = "Sifriyah";
+let promocaoAtual = null;
 
 function normalizaTelefone(tel) {
   const digits = (tel || "").replace(/\D/g, "");
@@ -174,18 +263,46 @@ function fmtDate(iso) {
   return `${d}/${m}/${y}`;
 }
 function linkReserva(livro) {
-  const texto = `Oi! Vi no catálogo do ${bibliotecaNome} que o livro "${livro.titulo}" ${
-    livro.disponivel ? "está disponível" : "deve ficar disponível em breve"
-  }. Posso reservar?`;
+  const texto = `Oi! Vi no catálogo do ${bibliotecaNome} que o livro "${livro.titulo}" está disponível. Posso reservar?`;
+  return `https://wa.me/${normalizaTelefone(whatsappContato)}?text=${encodeURIComponent(texto)}`;
+}
+function linkFilaEspera(livro) {
+  const texto = `Oi! O livro "${livro.titulo}" do ${bibliotecaNome} está emprestado agora${
+    livro.proximaData ? " (previsão de volta em " + fmtDate(livro.proximaData) + ")" : ""
+  }. Pode me avisar quando estiver disponível? Quero entrar na fila.`;
   return `https://wa.me/${normalizaTelefone(whatsappContato)}?text=${encodeURIComponent(texto)}`;
 }
 
-function render(filtro) {
+function atualizarCategorias() {
+  const select = document.getElementById("filtroCategoria");
+  const atual = select.value;
+  const categorias = Array.from(new Set(todosLivros.map((l) => l.categoria).filter(Boolean))).sort();
+  select.innerHTML =
+    '<option value="">Todas as categorias</option>' +
+    categorias.map((c) => `<option value="${c}">${c}</option>`).join("");
+  if (categorias.includes(atual)) select.value = atual;
+}
+
+function renderPromo() {
+  const el = document.getElementById("promoBanner");
+  if (!promocaoAtual || !promocaoAtual.ativa || !promocaoAtual.descricao) {
+    el.innerHTML = "";
+    return;
+  }
+  el.innerHTML = `<div class="caixa">🎉 <b>Promoção:</b> ${promocaoAtual.descricao}${
+    promocaoAtual.validoAte ? " (até " + fmtDate(promocaoAtual.validoAte) + ")" : ""
+  }</div>`;
+}
+
+function render() {
   const lista = document.getElementById("lista");
-  const termo = (filtro || "").trim().toLowerCase();
-  const filtrados = todosLivros.filter(
-    (l) => l.titulo.toLowerCase().includes(termo) || (l.autor || "").toLowerCase().includes(termo)
-  );
+  const termo = (document.getElementById("campoBusca").value || "").trim().toLowerCase();
+  const categoria = document.getElementById("filtroCategoria").value;
+  const filtrados = todosLivros.filter((l) => {
+    const bateBusca = l.titulo.toLowerCase().includes(termo) || (l.autor || "").toLowerCase().includes(termo);
+    const bateCategoria = !categoria || l.categoria === categoria;
+    return bateBusca && bateCategoria;
+  });
 
   if (filtrados.length === 0) {
     lista.innerHTML = '<div class="vazio">Nenhum livro encontrado.</div>';
@@ -197,9 +314,12 @@ function render(filtro) {
       const statusHtml = l.disponivel
         ? `<div class="status disponivel">● disponível agora</div>`
         : `<div class="status emprestado">● emprestado${l.proximaData ? " · previsão de volta em " + fmtDate(l.proximaData) : ""}</div>`;
-      const botao = whatsappContato
-        ? `<a class="btn" href="${linkReserva(l)}" target="_blank" rel="noreferrer">💬 Reservar</a>`
-        : "";
+      let botao = "";
+      if (whatsappContato) {
+        botao = l.disponivel
+          ? `<a class="btn" href="${linkReserva(l)}" target="_blank" rel="noreferrer">💬 Reservar</a>`
+          : `<a class="btn" style="background:#B8933E" href="${linkFilaEspera(l)}" target="_blank" rel="noreferrer">⏳ Entrar na fila</a>`;
+      }
       const capaHtml = l.capaUrl
         ? `<img class="capa" src="${l.capaUrl}" alt="">`
         : `<div class="capa-vazia">📕</div>`;
@@ -209,6 +329,8 @@ function render(filtro) {
           <div class="info">
             <div class="titulo">${l.titulo}</div>
             ${l.autor ? `<div class="autor">${l.autor}</div>` : ""}
+            ${l.categoria ? `<div class="autor">${l.categoria}</div>` : ""}
+            ${l.paginas ? `<div class="autor">${l.paginas} páginas</div>` : ""}
             ${statusHtml}
           </div>
           ${botao}
@@ -238,8 +360,11 @@ function iniciar() {
         todosLivros = dados.livros || [];
         whatsappContato = dados.whatsappContato || "";
         bibliotecaNome = dados.bibliotecaNome || "Sifriyah";
+        promocaoAtual = dados.promocao || null;
         document.getElementById("tituloBiblioteca").textContent = bibliotecaNome;
-        render(document.getElementById("campoBusca").value);
+        atualizarCategorias();
+        renderPromo();
+        render();
       },
       (err) => {
         document.getElementById("lista").innerHTML =
@@ -249,7 +374,44 @@ function iniciar() {
     );
 }
 
-document.getElementById("campoBusca").addEventListener("input", (e) => render(e.target.value));
+document.getElementById("campoBusca").addEventListener("input", render);
+document.getElementById("filtroCategoria").addEventListener("change", render);
+
+document.getElementById("pcEnviar").addEventListener("click", async () => {
+  const nome = document.getElementById("pcNome").value.trim();
+  const sobrenome = document.getElementById("pcSobrenome").value.trim();
+  const telefone = document.getElementById("pcTelefone").value.trim();
+  const email = document.getElementById("pcEmail").value.trim();
+  const msg = document.getElementById("precadastroMsg");
+
+  if (!nome || !telefone) {
+    msg.style.color = "#9C4A2C";
+    msg.textContent = "Preenche pelo menos nome e celular.";
+    return;
+  }
+  try {
+    const db = firebase.firestore();
+    await db.collection("sifriyah_precadastros").add({
+      biblioteca: DOC_ID,
+      nome,
+      sobrenome,
+      telefone,
+      email,
+      criadoEm: Date.now(),
+    });
+    msg.style.color = "#4B6B4A";
+    msg.textContent = "Recebido! Assim que possível você será cadastrado(a).";
+    document.getElementById("pcNome").value = "";
+    document.getElementById("pcSobrenome").value = "";
+    document.getElementById("pcTelefone").value = "";
+    document.getElementById("pcEmail").value = "";
+  } catch (err) {
+    msg.style.color = "#9C4A2C";
+    msg.textContent = "Não consegui enviar agora. Tenta de novo em instantes.";
+    console.error(err);
+  }
+});
+
 iniciar();
 </script>
 </body>
