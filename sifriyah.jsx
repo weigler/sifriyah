@@ -145,6 +145,21 @@ function salvarConfigNuvem(cfg) {
   else localStorage.removeItem(CLOUD_CONFIG_KEY);
 }
 
+// ---- Modo "sem senha" (opcional) ----
+// Quando ativado, os dados continuam tecnicamente criptografados (pra não mudar o formato de
+// armazenamento), mas com uma frase-senha FIXA e pública — ela está aqui, no código-fonte aberto
+// do app. Ou seja: isso NÃO protege os dados de quem tiver acesso ao Firestore, só evita o
+// aparelho pedir senha pra abrir. Ver conversa sobre isso nos Ajustes do app.
+const SEM_SENHA_PASSPHRASE = "sifriyah-modo-sem-senha-nao-e-secreta";
+const SEM_SENHA_LOCAL_KEY = "sifriyah-sem-senha";
+function lerSemSenhaLocal() {
+  return localStorage.getItem(SEM_SENHA_LOCAL_KEY) === "1";
+}
+function salvarSemSenhaLocal(ativo) {
+  if (ativo) localStorage.setItem(SEM_SENHA_LOCAL_KEY, "1");
+  else localStorage.removeItem(SEM_SENHA_LOCAL_KEY);
+}
+
 function carregarScript(src) {
   return new Promise((resolve, reject) => {
     if (document.querySelector(`script[src="${src}"]`)) return resolve();
@@ -154,6 +169,14 @@ function carregarScript(src) {
     s.onerror = reject;
     document.head.appendChild(s);
   });
+}
+
+// aceita colar "const firebaseConfig = {...};" ou só o objeto {...}
+function parseFirebaseConfigColado(texto) {
+  const limpo = texto.replace(/const\s+firebaseConfig\s*=\s*/, "").replace(/;\s*$/, "");
+  const obj = new Function("return (" + limpo + ")")();
+  if (!obj.apiKey || !obj.projectId) throw new Error("faltam campos");
+  return obj;
 }
 
 async function inicializarFirebase(firebaseConfig) {
@@ -171,6 +194,7 @@ async function inicializarFirebase(firebaseConfig) {
 // pra dois aparelhos não sobrescreverem um o dado do outro (só "brigam" se mexerem na mesma seção)
 const SECOES = ["acervo", "pessoas", "emprestimos", "ajustes"];
 const LABEL_SECAO = { acervo: "Acervo", pessoas: "Pessoas", emprestimos: "Empréstimos", ajustes: "Ajustes" };
+const NIVEIS_LEITURA = ["Infantil", "Juvenil", "Iniciante", "Intermediário", "Avançado"];
 const MAX_BACKUPS_AUTOMATICOS = 10;
 const BACKUP_LOCAL_KEY = "sifriyah-backups-local";
 
@@ -286,6 +310,9 @@ function migrarDados(parsed) {
     categoria: "",
     tags: [],
     quantidade: 1,
+    nivel: "",
+    sinopse: "",
+    linkExterno: "",
     ...l,
     tags: l.tags || [],
     quantidade: l.quantidade || 1,
@@ -498,6 +525,106 @@ function BotaoExcluir({ onConfirm, label = "excluir", small = false }) {
   );
 }
 
+// seletor de tags mais organizado: mostra as já selecionadas primeiro, o resto em ordem
+// alfabética, e um campo de busca quando a lista de tags fica grande
+function SeletorTags({ todasTags, selecionadas, onToggle }) {
+  const [filtro, setFiltro] = useState("");
+  const ordenadas = [...todasTags].sort((a, b) => a.localeCompare(b, "pt-BR"));
+  const jaSelecionadas = ordenadas.filter((t) => selecionadas.includes(t));
+  const restante = ordenadas.filter((t) => !selecionadas.includes(t));
+  const filtroLower = filtro.trim().toLowerCase();
+  const restanteFiltrado = filtroLower ? restante.filter((t) => t.toLowerCase().includes(filtroLower)) : restante;
+  const visiveis = [...jaSelecionadas, ...restanteFiltrado];
+
+  return (
+    <div>
+      <label style={{ ...labelStyle, marginBottom: 4, display: "block" }}>
+        Tags{selecionadas.length > 0 ? ` — ${selecionadas.length} selecionada${selecionadas.length > 1 ? "s" : ""}` : ""}
+      </label>
+      {todasTags.length > 8 && (
+        <Input
+          placeholder="Buscar tag…"
+          value={filtro}
+          onChange={(e) => setFiltro(e.target.value)}
+          style={{ marginBottom: 6, padding: "6px 10px", fontSize: 13 }}
+        />
+      )}
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+        {visiveis.map((t) => {
+          const ativa = selecionadas.includes(t);
+          return (
+            <button
+              key={t}
+              type="button"
+              onClick={() => onToggle(t)}
+              style={{
+                fontSize: 12.5,
+                padding: "5px 10px",
+                borderRadius: 14,
+                border: `1.5px solid ${ativa ? COLORS.gold : COLORS.rule}`,
+                background: ativa ? "#FBF3DC" : "#fff",
+                color: ativa ? COLORS.ink : COLORS.inkSoft,
+                cursor: "pointer",
+              }}
+            >
+              #{t}
+            </button>
+          );
+        })}
+        {visiveis.length === 0 && <div style={{ fontSize: 12, color: COLORS.inkSoft }}>nenhuma tag encontrada</div>}
+      </div>
+    </div>
+  );
+}
+
+
+// (pra evitar devolver sem querer sem ter registrado o pagamento)
+function BotaoDevolver({ restante, onConfirm }) {
+  const [confirmando, setConfirmando] = useState(false);
+  const timerRef = React.useRef(null);
+
+  if (restante <= 0) {
+    return (
+      <Button variant="ghost" style={{ padding: "7px 12px", fontSize: 13 }} onClick={onConfirm}>
+        Marcar devolvido
+      </Button>
+    );
+  }
+
+  function clicar() {
+    if (confirmando) {
+      clearTimeout(timerRef.current);
+      setConfirmando(false);
+      onConfirm();
+      return;
+    }
+    setConfirmando(true);
+    timerRef.current = setTimeout(() => setConfirmando(false), 4000);
+  }
+
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+      {confirmando && (
+        <span style={{ fontSize: 12, color: COLORS.rust }}>
+          ainda falta {fmtMoney(restante)} — confirma devolver mesmo assim?
+        </span>
+      )}
+      <Button
+        style={{
+          padding: "7px 12px",
+          fontSize: 13,
+          ...(confirmando
+            ? { background: COLORS.rust, border: "none", color: "#fff" }
+            : { background: "transparent", color: COLORS.burgundy, border: `1.5px solid ${COLORS.burgundy}` }),
+        }}
+        onClick={clicar}
+      >
+        {confirmando ? "Confirmar devolução" : "Marcar devolvido"}
+      </Button>
+    </div>
+  );
+}
+
 function Button({ children, variant = "primary", ...props }) {
   const styles = {
     primary: { background: COLORS.burgundy, color: "#fff", border: "none" },
@@ -568,12 +695,12 @@ export default function App() {
   async function carregarSecoesBrutas() {
     if (cloudConfig) {
       const doc = await nuvemLerDoc(cloudConfig, cloudDocId);
-      if (!doc) return { secoes: {}, legado: null };
+      if (!doc) return { secoes: {}, legado: null, semSenha: false };
       const secoes = {};
       SECOES.forEach((s) => {
         if (doc[s] && doc[s].blob) secoes[s] = doc[s];
       });
-      return { secoes, legado: doc.blob || null };
+      return { secoes, legado: doc.blob || null, semSenha: !!doc.semSenha };
     }
     const secoes = {};
     for (const s of SECOES) {
@@ -587,11 +714,28 @@ export default function App() {
     }
     const legadoRes = await window.storage.get(STORAGE_KEY, false).catch(() => null);
     const legado = legadoRes && legadoRes.value ? legadoRes.value : null;
-    return { secoes, legado };
+    return { secoes, legado, semSenha: lerSemSenhaLocal() };
   }
 
-  function configurarNuvem(firebaseConfig, docId) {
+  async function configurarNuvem(firebaseConfig, docId) {
     const cfg = { ...firebaseConfig, docId: docId || "principal" };
+    if (unlocked) {
+      // este aparelho já estava desbloqueado (às vezes com um estado vazio, criado só localmente).
+      // antes de deixar esse estado ser salvo na nuvem, confere se essa biblioteca já tem dados reais —
+      // se tiver, tranca de novo e pede a senha certa dessa biblioteca, em vez de arriscar sobrescrever.
+      try {
+        const doc = await nuvemLerDoc(cfg, cfg.docId);
+        const temDadosNaNuvem = !!doc && (SECOES.some((s) => doc[s] && doc[s].blob) || !!doc.blob);
+        if (temDadosNaNuvem) {
+          setUnlocked(false);
+          setSenhaAtual("");
+        }
+      } catch (e) {
+        // não deu pra confirmar — mais seguro travar de novo do que arriscar
+        setUnlocked(false);
+        setSenhaAtual("");
+      }
+    }
     salvarConfigNuvem(cfg);
     setCloudConfigState(cfg);
     setCloudDocId(cfg.docId);
@@ -605,6 +749,7 @@ export default function App() {
   const [unlocked, setUnlocked] = useState(false);
   const [temDadosSalvos, setTemDadosSalvos] = useState(false);
   const [senhaAtual, setSenhaAtual] = useState(""); // fica só na memória, nunca é salva
+  const [semSenha, setSemSenha] = useState(false); // modo "sem senha" ativo pra essa biblioteca
 
   // ---- Histórico de salvamento e backups ----
   const [ultimoSalvamento, setUltimoSalvamento] = useState({}); // { acervo: ms, pessoas: ms, emprestimos: ms, ajustes: ms }
@@ -617,9 +762,14 @@ export default function App() {
     (async () => {
       setCloudStatus(cloudConfig ? "conectando" : "desligada");
       try {
-        const { secoes, legado } = await carregarSecoesBrutas();
+        const { secoes, legado, semSenha: flagSemSenha } = await carregarSecoesBrutas();
         setTemDadosSalvos(Object.keys(secoes).length > 0 || !!legado);
+        setSemSenha(flagSemSenha);
         setCloudStatus(cloudConfig ? "sincronizada" : "desligada");
+        if (flagSemSenha) {
+          // modo sem senha ativo: abre direto, sem pedir nada pro usuário
+          await desbloquear(SEM_SENHA_PASSPHRASE);
+        }
       } catch (e) {
         setTemDadosSalvos(false);
         setCloudStatus(cloudConfig ? "erro" : "desligada");
@@ -731,9 +881,10 @@ export default function App() {
     }
     if (cloudConfig) {
       const db = await inicializarFirebase(cloudConfig);
-      await db.collection("sifriyah").doc(cloudDocId).set({ blob: "" }, { merge: true }); // limpa o formato antigo também
+      await db.collection("sifriyah").doc(cloudDocId).set({ blob: "", semSenha: false }, { merge: true }); // limpa o formato antigo também
     } else {
       await window.storage.set(STORAGE_KEY, "", false); // limpa o formato antigo também
+      salvarSemSenhaLocal(false);
     }
     setLivros([]);
     setEmprestimos([]);
@@ -743,14 +894,15 @@ export default function App() {
     setTags([]);
     setConfig({ pix: "", recebedor: "", whatsappContato: "", linkVitrine: "", promocao: { ativa: false, descricao: "", validoAte: "", desconto: 0 } });
     setSenhaAtual("");
+    setSemSenha(false);
     setUnlocked(false);
     setTemDadosSalvos(false);
     // os backups já feitos NÃO são apagados — servem de rede de segurança caso o reset tenha sido engano
   }
 
   // grava uma seção (local ou nuvem), atualizando o registro de "última vez salva"
-  async function salvarSecao(secao, dadosSecao) {
-    const blob = await encryptJSON(dadosSecao, senhaAtual);
+  async function salvarSecao(secao, dadosSecao, senhaParaUsar) {
+    const blob = await encryptJSON(dadosSecao, senhaParaUsar || senhaAtual);
     const agora = Date.now();
     ultimosTimestampsRef.current[secao] = agora;
     if (cloudConfig) {
@@ -886,6 +1038,9 @@ export default function App() {
               capaUrl: l.capaUrl || null,
               paginas: l.paginas || null,
               categoria: l.categoria || "",
+              nivel: l.nivel || "",
+              sinopse: l.sinopse || "",
+              linkExterno: l.linkExterno || "",
               tags: l.tags || [],
               disponivel,
               proximaData,
@@ -991,6 +1146,105 @@ export default function App() {
     await atualizarListaBackups();
   }
 
+  // ---- Trocar senha / ativar-desativar o modo "sem senha" ----
+  async function atualizarBlobsBackup(backup, novosBlobsSecao) {
+    if (cloudConfig) {
+      const db = await inicializarFirebase(cloudConfig);
+      await db.collection("sifriyah_backups").doc(backup.id).set({ secoes: novosBlobsSecao }, { merge: true });
+    } else {
+      const lista = await localListarBackups();
+      const atualizada = lista.map((b) => (b.id === backup.id ? { ...b, secoes: novosBlobsSecao } : b));
+      await localSalvarListaBackups(atualizada);
+    }
+  }
+
+  // re-criptografa as 4 seções e todos os backups já existentes com uma nova senha/frase —
+  // usado tanto pra trocar de senha quanto pra ativar/desativar o modo sem senha
+  async function reencriptarTudoCom(senhaAntiga, senhaNova) {
+    const secoesAtuais = montarSecoes({ livros, categorias, tags, pessoas, emprestimos, cobrancas, config });
+    for (const s of SECOES) {
+      await salvarSecao(s, secoesAtuais[s], senhaNova);
+    }
+    const lista = await listarBackups();
+    for (const b of lista) {
+      const decodificado = {};
+      for (const s of SECOES) {
+        if (b.secoes[s]) {
+          try {
+            decodificado[s] = await decryptJSON(b.secoes[s], senhaAntiga);
+          } catch (e) {
+            // esse backup específico não abriu com a senha informada — pula, sem travar os demais
+          }
+        }
+      }
+      const novosBlobs = {};
+      for (const s of SECOES) {
+        if (decodificado[s] !== undefined) novosBlobs[s] = await encryptJSON(decodificado[s], senhaNova);
+      }
+      if (Object.keys(novosBlobs).length > 0) await atualizarBlobsBackup(b, novosBlobs);
+    }
+  }
+
+  async function trocarSenha(senhaAtualDigitada, novaSenha) {
+    if (senhaAtualDigitada !== senhaAtual) {
+      return { ok: false, erro: "A senha atual não confere." };
+    }
+    if (!novaSenha || novaSenha.length < 4) {
+      return { ok: false, erro: "A nova senha precisa ter pelo menos 4 caracteres." };
+    }
+    try {
+      await reencriptarTudoCom(senhaAtual, novaSenha);
+      setSenhaAtual(novaSenha);
+      return { ok: true };
+    } catch (e) {
+      console.error("Erro ao trocar senha:", e);
+      return { ok: false, erro: "Não deu pra trocar a senha. Tenta de novo." };
+    }
+  }
+
+  // desliga a proteção por senha: re-criptografa tudo com a frase-senha fixa (não secreta,
+  // ver comentário perto de SEM_SENHA_PASSPHRASE) e marca o modo como ativo
+  async function desativarSenha() {
+    try {
+      await reencriptarTudoCom(senhaAtual, SEM_SENHA_PASSPHRASE);
+      if (cloudConfig) {
+        const db = await inicializarFirebase(cloudConfig);
+        await db.collection("sifriyah").doc(cloudDocId).set({ semSenha: true }, { merge: true });
+      } else {
+        salvarSemSenhaLocal(true);
+      }
+      setSenhaAtual(SEM_SENHA_PASSPHRASE);
+      setSemSenha(true);
+      setUnlocked(true);
+      return { ok: true };
+    } catch (e) {
+      console.error("Erro ao desativar senha:", e);
+      return { ok: false, erro: "Não deu pra desativar a senha. Tenta de novo." };
+    }
+  }
+
+  // volta a exigir senha: re-criptografa tudo com a nova senha escolhida agora
+  async function ativarSenha(novaSenha) {
+    if (!novaSenha || novaSenha.length < 4) {
+      return { ok: false, erro: "Use pelo menos 4 caracteres." };
+    }
+    try {
+      await reencriptarTudoCom(senhaAtual, novaSenha);
+      if (cloudConfig) {
+        const db = await inicializarFirebase(cloudConfig);
+        await db.collection("sifriyah").doc(cloudDocId).set({ semSenha: false }, { merge: true });
+      } else {
+        salvarSemSenhaLocal(false);
+      }
+      setSenhaAtual(novaSenha);
+      setSemSenha(false);
+      return { ok: true };
+    } catch (e) {
+      console.error("Erro ao ativar senha:", e);
+      return { ok: false, erro: "Não deu pra ativar a senha. Tenta de novo." };
+    }
+  }
+
   // confere uma vez por desbloqueio se já passou mais de 24h desde o último backup;
   // se sim (ou se nunca houve nenhum), faz um backup automático
   useEffect(() => {
@@ -1047,6 +1301,9 @@ export default function App() {
         categoria: (dados.categoria || "").trim(),
         tags: dados.tags || [],
         quantidade: dados.quantidade ? Math.max(1, parseInt(dados.quantidade, 10)) : 1,
+        nivel: dados.nivel || "",
+        sinopse: (dados.sinopse || "").trim(),
+        linkExterno: (dados.linkExterno || "").trim(),
       },
     ]);
   }
@@ -1067,6 +1324,9 @@ export default function App() {
               categoria: (dados.categoria || "").trim(),
               tags: dados.tags || [],
               quantidade: dados.quantidade ? Math.max(1, parseInt(dados.quantidade, 10)) : 1,
+              nivel: dados.nivel || "",
+              sinopse: (dados.sinopse || "").trim(),
+              linkExterno: (dados.linkExterno || "").trim(),
             }
           : l
       )
@@ -1208,6 +1468,11 @@ export default function App() {
         temDadosSalvos={temDadosSalvos}
         onDesbloquear={desbloquear}
         onApagarTudo={apagarTudoEComecarDeNovo}
+        onSemSenha={desativarSenha}
+        cloudConfig={cloudConfig}
+        cloudStatus={cloudStatus}
+        onConfigurarNuvem={configurarNuvem}
+        onDesligarNuvem={desligarNuvem}
       />
     );
   }
@@ -1223,25 +1488,27 @@ export default function App() {
       }}
     >
       <div style={{ background: COLORS.burgundyDark, padding: "28px 20px 22px", color: "#F5EFE0", position: "relative" }}>
-        <button
-          onClick={bloquear}
-          title="Bloquear"
-          style={{
-            position: "absolute",
-            top: 20,
-            right: 20,
-            background: "transparent",
-            border: `1px solid ${COLORS.gold}`,
-            color: COLORS.gold,
-            borderRadius: 6,
-            padding: "5px 10px",
-            fontSize: 12,
-            fontFamily: "'JetBrains Mono', monospace",
-            cursor: "pointer",
-          }}
-        >
-          🔒 bloquear
-        </button>
+        {!semSenha && (
+          <button
+            onClick={bloquear}
+            title="Bloquear"
+            style={{
+              position: "absolute",
+              top: 20,
+              right: 20,
+              background: "transparent",
+              border: `1px solid ${COLORS.gold}`,
+              color: COLORS.gold,
+              borderRadius: 6,
+              padding: "5px 10px",
+              fontSize: 12,
+              fontFamily: "'JetBrains Mono', monospace",
+              cursor: "pointer",
+            }}
+          >
+            🔒 bloquear
+          </button>
+        )}
         <div
           style={{
             fontFamily: "'JetBrains Mono', monospace",
@@ -1403,6 +1670,10 @@ export default function App() {
             onAtualizarBackups={atualizarListaBackups}
             onRestaurarBackup={restaurarBackup}
             onApagarBackup={apagarBackup}
+            semSenha={semSenha}
+            onTrocarSenha={trocarSenha}
+            onDesativarSenha={desativarSenha}
+            onAtivarSenha={ativarSenha}
           />
         )}
       </div>
@@ -1782,71 +2053,67 @@ function EmprestimosTab({
                     </div>
                   )}
 
-                  {!emp.devolvido && (
-                    <>
-                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 8 }}>
-                        <Input
-                          type="number"
-                          step="0.01"
-                          placeholder="valor pago"
-                          value={pagamentoInputs[emp.id] || ""}
-                          onChange={(e) => setPagamentoInputs((p) => ({ ...p, [emp.id]: e.target.value }))}
-                          style={{ width: 110, padding: "7px 10px", fontSize: 13 }}
-                        />
-                        <Button
-                          variant="subtle"
-                          style={{ padding: "7px 12px", fontSize: 13 }}
-                          onClick={() => {
-                            onPagar(emp.id, pagamentoInputs[emp.id]);
-                            setPagamentoInputs((p) => ({ ...p, [emp.id]: "" }));
-                          }}
-                        >
-                          Registrar pagamento
-                        </Button>
-                        <Button variant="ghost" style={{ padding: "7px 12px", fontSize: 13 }} onClick={() => onDevolver(emp.id)}>
-                          Marcar devolvido
-                        </Button>
-                      </div>
+                  {/* registrar pagamento: sempre disponível, mesmo depois de devolvido, pra poder corrigir o registro */}
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 8 }}>
+                    <Input
+                      type="number"
+                      step="0.01"
+                      placeholder="valor pago"
+                      value={pagamentoInputs[emp.id] || ""}
+                      onChange={(e) => setPagamentoInputs((p) => ({ ...p, [emp.id]: e.target.value }))}
+                      style={{ width: 110, padding: "7px 10px", fontSize: 13 }}
+                    />
+                    <Button
+                      variant="subtle"
+                      style={{ padding: "7px 12px", fontSize: 13 }}
+                      onClick={() => {
+                        onPagar(emp.id, pagamentoInputs[emp.id]);
+                        setPagamentoInputs((p) => ({ ...p, [emp.id]: "" }));
+                      }}
+                    >
+                      Registrar pagamento
+                    </Button>
+                    {!emp.devolvido && <BotaoDevolver restante={restante} onConfirm={() => onDevolver(emp.id)} />}
+                  </div>
 
-                      {pessoa && pessoa.telefone ? (
-                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                          {restante > 0 && (
-                            <a
-                              href={linkWhatsApp(pessoa.telefone, mensagemCobranca(emp, livro, pessoa))}
-                              target="_blank"
-                              rel="noreferrer"
-                              onClick={() => onRegistrarCobranca(emp.id, "cobranca", restante)}
-                            >
-                              <Button variant="whats" style={{ padding: "7px 12px", fontSize: 13 }}>
-                                💬 Cobrar via WhatsApp
-                              </Button>
-                            </a>
-                          )}
-                          <a
-                            href={linkWhatsApp(pessoa.telefone, mensagemRenovacao(emp, livro, pessoa))}
-                            target="_blank"
-                            rel="noreferrer"
-                            onClick={() => onRegistrarCobranca(emp.id, "lembrete", 0)}
-                          >
-                            <Button variant="subtle" style={{ padding: "7px 12px", fontSize: 13 }}>
-                              💬 Lembrar prazo
-                            </Button>
-                          </a>
-                          <a
-                            href={linkSMS(pessoa.telefone, mensagemCobranca(emp, livro, pessoa))}
-                            onClick={() => onRegistrarCobranca(emp.id, "sms", restante)}
-                          >
-                            <Button variant="subtle" style={{ padding: "7px 12px", fontSize: 13 }}>
-                              ✉️ SMS
-                            </Button>
-                          </a>
-                        </div>
-                      ) : (
-                        <div style={{ fontSize: 12, color: COLORS.inkSoft }}>
-                          Cadastre o celular {pessoa ? "de " + pessoa.nome : "dessa pessoa"} na aba Pessoas pra poder cobrar por WhatsApp.
-                        </div>
+                  {pessoa && pessoa.telefone && restante > 0 && (
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+                      <a
+                        href={linkWhatsApp(pessoa.telefone, mensagemCobranca(emp, livro, pessoa))}
+                        target="_blank"
+                        rel="noreferrer"
+                        onClick={() => onRegistrarCobranca(emp.id, "cobranca", restante)}
+                      >
+                        <Button variant="whats" style={{ padding: "7px 12px", fontSize: 13 }}>
+                          💬 Cobrar via WhatsApp
+                        </Button>
+                      </a>
+                      {!emp.devolvido && (
+                        <a
+                          href={linkWhatsApp(pessoa.telefone, mensagemRenovacao(emp, livro, pessoa))}
+                          target="_blank"
+                          rel="noreferrer"
+                          onClick={() => onRegistrarCobranca(emp.id, "lembrete", 0)}
+                        >
+                          <Button variant="subtle" style={{ padding: "7px 12px", fontSize: 13 }}>
+                            💬 Lembrar prazo
+                          </Button>
+                        </a>
                       )}
-                    </>
+                      <a
+                        href={linkSMS(pessoa.telefone, mensagemCobranca(emp, livro, pessoa))}
+                        onClick={() => onRegistrarCobranca(emp.id, "sms", restante)}
+                      >
+                        <Button variant="subtle" style={{ padding: "7px 12px", fontSize: 13 }}>
+                          ✉️ SMS
+                        </Button>
+                      </a>
+                    </div>
+                  )}
+                  {!emp.devolvido && !(pessoa && pessoa.telefone) && (
+                    <div style={{ fontSize: 12, color: COLORS.inkSoft, marginBottom: 8 }}>
+                      Cadastre o celular {pessoa ? "de " + pessoa.nome : "dessa pessoa"} na aba Pessoas pra poder cobrar por WhatsApp.
+                    </div>
                   )}
                   {emp.devolvido && (
                     <div style={{ fontSize: 12, color: COLORS.inkSoft, marginBottom: 8 }}>
@@ -1904,6 +2171,9 @@ function AcervoTab({ livros, emprestimos, categorias, tags, onAdd, onEdit, onRem
   const [limiteSemanas, setLimiteSemanas] = useState("");
   const [quantidade, setQuantidade] = useState("1");
   const [categoria, setCategoria] = useState("");
+  const [nivel, setNivel] = useState("");
+  const [sinopse, setSinopse] = useState("");
+  const [linkExterno, setLinkExterno] = useState("");
   const [tagsSelecionadas, setTagsSelecionadas] = useState([]);
   const [buscandoCapa, setBuscandoCapa] = useState(false);
   const [editandoId, setEditandoId] = useState(null);
@@ -1916,6 +2186,9 @@ function AcervoTab({ livros, emprestimos, categorias, tags, onAdd, onEdit, onRem
   const [editLimiteSemanas, setEditLimiteSemanas] = useState("");
   const [editQuantidade, setEditQuantidade] = useState("1");
   const [editCategoria, setEditCategoria] = useState("");
+  const [editNivel, setEditNivel] = useState("");
+  const [editSinopse, setEditSinopse] = useState("");
+  const [editLinkExterno, setEditLinkExterno] = useState("");
   const [editTagsSelecionadas, setEditTagsSelecionadas] = useState([]);
   const [buscandoCapaEdit, setBuscandoCapaEdit] = useState(false);
 
@@ -1949,6 +2222,9 @@ function AcervoTab({ livros, emprestimos, categorias, tags, onAdd, onEdit, onRem
     setEditLimiteSemanas(l.limiteSemanas || "");
     setEditQuantidade(String(l.quantidade || 1));
     setEditCategoria(l.categoria || "");
+    setEditNivel(l.nivel || "");
+    setEditSinopse(l.sinopse || "");
+    setEditLinkExterno(l.linkExterno || "");
     setEditTagsSelecionadas(l.tags || []);
   }
   function salvarEdicao() {
@@ -1962,6 +2238,9 @@ function AcervoTab({ livros, emprestimos, categorias, tags, onAdd, onEdit, onRem
       limiteSemanas: editLimiteSemanas,
       quantidade: editQuantidade,
       categoria: editCategoria,
+      nivel: editNivel,
+      sinopse: editSinopse,
+      linkExterno: editLinkExterno,
       tags: editTagsSelecionadas,
     });
     setEditandoId(null);
@@ -2004,35 +2283,33 @@ function AcervoTab({ livros, emprestimos, categorias, tags, onAdd, onEdit, onRem
               <option key={c} value={c}>{c}</option>
             ))}
           </select>
+          <select value={nivel} onChange={(e) => setNivel(e.target.value)} style={{ ...inputBase, flex: "1 1 140px" }}>
+            <option value="">Nível de leitura</option>
+            {NIVEIS_LEITURA.map((n) => (
+              <option key={n} value={n}>{n}</option>
+            ))}
+          </select>
         </div>
         {tags.length > 0 && (
-          <div>
-            <label style={{ ...labelStyle, marginBottom: 4, display: "block" }}>Tags</label>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-              {tags.map((t) => {
-                const ativa = tagsSelecionadas.includes(t);
-                return (
-                  <button
-                    key={t}
-                    type="button"
-                    onClick={() => alternarTag(tagsSelecionadas, setTagsSelecionadas, t)}
-                    style={{
-                      fontSize: 12.5,
-                      padding: "5px 10px",
-                      borderRadius: 14,
-                      border: `1.5px solid ${ativa ? COLORS.gold : COLORS.rule}`,
-                      background: ativa ? "#FBF3DC" : "#fff",
-                      color: ativa ? COLORS.ink : COLORS.inkSoft,
-                      cursor: "pointer",
-                    }}
-                  >
-                    #{t}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
+          <SeletorTags
+            todasTags={tags}
+            selecionadas={tagsSelecionadas}
+            onToggle={(t) => alternarTag(tagsSelecionadas, setTagsSelecionadas, t)}
+          />
         )}
+        <label style={{ ...labelStyle, marginBottom: 2 }}>Sinopse (opcional)</label>
+        <textarea
+          value={sinopse}
+          onChange={(e) => setSinopse(e.target.value)}
+          rows={3}
+          placeholder="Do que o livro trata…"
+          style={{ ...inputBase, fontFamily: "'Source Serif 4', serif" }}
+        />
+        <Input
+          placeholder="Link (Amazon, editora, etc. — opcional)"
+          value={linkExterno}
+          onChange={(e) => setLinkExterno(e.target.value)}
+        />
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <Input
             type="number"
@@ -2079,7 +2356,21 @@ function AcervoTab({ livros, emprestimos, categorias, tags, onAdd, onEdit, onRem
         <Button
           style={{ alignSelf: "flex-start" }}
           onClick={() => {
-            onAdd({ titulo, autor, paginas, dataAquisicao, capaUrl, valorSemanal, limiteSemanas, quantidade, categoria, tags: tagsSelecionadas });
+            onAdd({
+              titulo,
+              autor,
+              paginas,
+              dataAquisicao,
+              capaUrl,
+              valorSemanal,
+              limiteSemanas,
+              quantidade,
+              categoria,
+              nivel,
+              sinopse,
+              linkExterno,
+              tags: tagsSelecionadas,
+            });
             setTitulo("");
             setAutor("");
             setPaginas("");
@@ -2089,6 +2380,9 @@ function AcervoTab({ livros, emprestimos, categorias, tags, onAdd, onEdit, onRem
             setLimiteSemanas("");
             setQuantidade("1");
             setCategoria("");
+            setNivel("");
+            setSinopse("");
+            setLinkExterno("");
             setTagsSelecionadas([]);
           }}
         >
@@ -2131,35 +2425,35 @@ function AcervoTab({ livros, emprestimos, categorias, tags, onAdd, onEdit, onRem
                         <option key={c} value={c}>{c}</option>
                       ))}
                     </select>
+                    <select value={editNivel} onChange={(e) => setEditNivel(e.target.value)} style={{ ...inputBase, flex: "1 1 130px" }}>
+                      <option value="">Nível de leitura</option>
+                      {NIVEIS_LEITURA.map((n) => (
+                        <option key={n} value={n}>{n}</option>
+                      ))}
+                    </select>
                     <Input type="number" step="0.01" placeholder="Valor semanal (R$)" value={editValorSemanal} onChange={(e) => setEditValorSemanal(e.target.value)} style={{ flex: "1 1 140px" }} />
                     <Input type="number" placeholder="Limite semanas" value={editLimiteSemanas} onChange={(e) => setEditLimiteSemanas(e.target.value)} style={{ flex: "1 1 120px" }} />
                     <Input type="number" min="1" placeholder="Unidades" value={editQuantidade} onChange={(e) => setEditQuantidade(e.target.value)} style={{ flex: "1 1 100px" }} />
                   </div>
                   {tags.length > 0 && (
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                      {tags.map((t) => {
-                        const ativa = editTagsSelecionadas.includes(t);
-                        return (
-                          <button
-                            key={t}
-                            type="button"
-                            onClick={() => alternarTag(editTagsSelecionadas, setEditTagsSelecionadas, t)}
-                            style={{
-                              fontSize: 12.5,
-                              padding: "5px 10px",
-                              borderRadius: 14,
-                              border: `1.5px solid ${ativa ? COLORS.gold : COLORS.rule}`,
-                              background: ativa ? "#FBF3DC" : "#fff",
-                              color: ativa ? COLORS.ink : COLORS.inkSoft,
-                              cursor: "pointer",
-                            }}
-                          >
-                            #{t}
-                          </button>
-                        );
-                      })}
-                    </div>
+                    <SeletorTags
+                      todasTags={tags}
+                      selecionadas={editTagsSelecionadas}
+                      onToggle={(t) => alternarTag(editTagsSelecionadas, setEditTagsSelecionadas, t)}
+                    />
                   )}
+                  <label style={{ ...labelStyle, marginBottom: 2 }}>Sinopse (opcional)</label>
+                  <textarea
+                    value={editSinopse}
+                    onChange={(e) => setEditSinopse(e.target.value)}
+                    rows={3}
+                    style={{ ...inputBase, fontFamily: "'Source Serif 4', serif" }}
+                  />
+                  <Input
+                    placeholder="Link (Amazon, editora, etc.)"
+                    value={editLinkExterno}
+                    onChange={(e) => setEditLinkExterno(e.target.value)}
+                  />
                   <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                     <Input placeholder="Link da capa" value={editCapaUrl} onChange={(e) => setEditCapaUrl(e.target.value)} style={{ flex: 1 }} />
                     {editCapaUrl && (
@@ -2220,9 +2514,43 @@ function AcervoTab({ livros, emprestimos, categorias, tags, onAdd, onEdit, onRem
                       {l.limiteSemanas ? ` · limite ${l.limiteSemanas} sem.` : ""}
                       {quantidade > 1 ? ` · ${quantidade} unidades` : ""}
                     </div>
+                    {l.nivel && (
+                      <span
+                        style={{
+                          display: "inline-block",
+                          fontSize: 10.5,
+                          fontFamily: "'JetBrains Mono', monospace",
+                          color: COLORS.sage,
+                          border: `1px solid ${COLORS.sage}`,
+                          borderRadius: 10,
+                          padding: "1px 7px",
+                          marginTop: 4,
+                        }}
+                      >
+                        {l.nivel}
+                      </span>
+                    )}
                     {l.tags && l.tags.length > 0 && (
-                      <div style={{ fontSize: 11, color: COLORS.inkSoft, marginTop: 2 }}>
+                      <div style={{ fontSize: 11, color: COLORS.inkSoft, marginTop: 4 }}>
                         {l.tags.map((t) => `#${t}`).join(" ")}
+                      </div>
+                    )}
+                    {l.sinopse && (
+                      <details style={{ marginTop: 4 }}>
+                        <summary style={{ fontSize: 11.5, color: COLORS.burgundy, cursor: "pointer" }}>sinopse</summary>
+                        <div style={{ fontSize: 12.5, color: COLORS.inkSoft, marginTop: 4, lineHeight: 1.5 }}>{l.sinopse}</div>
+                      </details>
+                    )}
+                    {l.linkExterno && (
+                      <div style={{ marginTop: 4 }}>
+                        <a
+                          href={l.linkExterno}
+                          target="_blank"
+                          rel="noreferrer"
+                          style={{ fontSize: 11.5, color: COLORS.burgundy }}
+                        >
+                          🔗 ver mais / comprar
+                        </a>
                       </div>
                     )}
                   </div>
@@ -2827,6 +3155,10 @@ function AjustesTab({
   onAtualizarBackups,
   onRestaurarBackup,
   onApagarBackup,
+  semSenha,
+  onTrocarSenha,
+  onDesativarSenha,
+  onAtivarSenha,
 }) {
   const [pix, setPix] = useState(config.pix || "");
   const [recebedor, setRecebedor] = useState(config.recebedor || "");
@@ -2848,6 +3180,17 @@ function AjustesTab({
   const [restaurandoId, setRestaurandoId] = useState(null);
   const [restauradoOk, setRestauradoOk] = useState(false);
 
+  const [senhaAtualDigitada, setSenhaAtualDigitada] = useState("");
+  const [novaSenha, setNovaSenha] = useState("");
+  const [confirmarNovaSenha, setConfirmarNovaSenha] = useState("");
+  const [erroSenha, setErroSenha] = useState("");
+  const [okSenha, setOkSenha] = useState("");
+  const [trocandoSenha, setTrocandoSenha] = useState(false);
+  const [confirmandoDesativar, setConfirmandoDesativar] = useState(false);
+  const [ativandoSenha, setAtivandoSenha] = useState(false);
+  const [novaSenhaAtivar, setNovaSenhaAtivar] = useState("");
+  const [confirmarSenhaAtivar, setConfirmarSenhaAtivar] = useState("");
+
   useEffect(() => {
     onAtualizarBackups();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2863,6 +3206,51 @@ function AjustesTab({
       console.error("Erro ao restaurar backup:", e);
     }
     setRestaurandoId(null);
+  }
+
+  async function handleTrocarSenha() {
+    setErroSenha("");
+    setOkSenha("");
+    if (novaSenha !== confirmarNovaSenha) {
+      setErroSenha("As senhas não coincidem.");
+      return;
+    }
+    setTrocandoSenha(true);
+    const r = await onTrocarSenha(senhaAtualDigitada, novaSenha);
+    setTrocandoSenha(false);
+    if (r.ok) {
+      setOkSenha("Senha alterada com sucesso.");
+      setSenhaAtualDigitada("");
+      setNovaSenha("");
+      setConfirmarNovaSenha("");
+    } else {
+      setErroSenha(r.erro);
+    }
+  }
+
+  async function handleDesativarSenha() {
+    setTrocandoSenha(true);
+    await onDesativarSenha();
+    setTrocandoSenha(false);
+    setConfirmandoDesativar(false);
+  }
+
+  async function handleAtivarSenha() {
+    setErroSenha("");
+    if (novaSenhaAtivar !== confirmarSenhaAtivar) {
+      setErroSenha("As senhas não coincidem.");
+      return;
+    }
+    setTrocandoSenha(true);
+    const r = await onAtivarSenha(novaSenhaAtivar);
+    setTrocandoSenha(false);
+    if (r.ok) {
+      setAtivandoSenha(false);
+      setNovaSenhaAtivar("");
+      setConfirmarSenhaAtivar("");
+    } else {
+      setErroSenha(r.erro);
+    }
   }
 
   function salvarGeral() {
@@ -2885,10 +3273,7 @@ function AjustesTab({
   function ativarNuvem() {
     setErroNuvem("");
     try {
-      // aceita colar "const firebaseConfig = {...};" ou só o objeto {...}
-      const texto = colado.replace(/const\s+firebaseConfig\s*=\s*/, "").replace(/;\s*$/, "");
-      const obj = new Function("return (" + texto + ")")();
-      if (!obj.apiKey || !obj.projectId) throw new Error("faltam campos");
+      const obj = parseFirebaseConfigColado(colado);
       onConfigurarNuvem(obj, docId || "principal");
     } catch (e) {
       setErroNuvem("Não consegui ler essa configuração. Confere se colou o bloco inteiro do Firebase.");
@@ -3200,17 +3585,136 @@ function AjustesTab({
           </div>
         )}
       </div>
+
+      <div
+        style={{
+          background: COLORS.card,
+          border: `1.5px solid ${COLORS.rule}`,
+          borderRadius: 10,
+          padding: 16,
+          marginTop: 16,
+          display: "flex",
+          flexDirection: "column",
+          gap: 10,
+        }}
+      >
+        <div style={{ fontFamily: "'Playfair Display', serif", fontWeight: 700, fontSize: 16 }}>
+          Senha de acesso
+        </div>
+
+        {semSenha ? (
+          <>
+            <div style={{ fontSize: 13, color: COLORS.inkSoft }}>
+              Este app está funcionando <b>sem senha</b> — abre direto, sem pedir nada. Os dados continuam
+              criptografados por baixo dos panos, mas com uma chave fixa que está no código público do app,
+              então isso não protege as informações de quem tiver acesso ao Firestore.
+            </div>
+            {!ativandoSenha ? (
+              <Button style={{ alignSelf: "flex-start" }} onClick={() => setAtivandoSenha(true)}>
+                Ativar senha
+              </Button>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                <Input
+                  type="password"
+                  placeholder="Nova senha"
+                  value={novaSenhaAtivar}
+                  onChange={(e) => setNovaSenhaAtivar(e.target.value)}
+                />
+                <Input
+                  type="password"
+                  placeholder="Confirme a nova senha"
+                  value={confirmarSenhaAtivar}
+                  onChange={(e) => setConfirmarSenhaAtivar(e.target.value)}
+                />
+                {erroSenha && <div style={{ fontSize: 12.5, color: COLORS.rust }}>{erroSenha}</div>}
+                <div style={{ display: "flex", gap: 8 }}>
+                  <Button onClick={handleAtivarSenha} disabled={trocandoSenha}>
+                    {trocandoSenha ? "Ativando…" : "Confirmar"}
+                  </Button>
+                  <Button variant="ghost" onClick={() => setAtivandoSenha(false)}>
+                    Cancelar
+                  </Button>
+                </div>
+              </div>
+            )}
+          </>
+        ) : (
+          <>
+            <label style={labelStyle}>Trocar senha</label>
+            <Input
+              type="password"
+              placeholder="Senha atual"
+              value={senhaAtualDigitada}
+              onChange={(e) => setSenhaAtualDigitada(e.target.value)}
+            />
+            <Input
+              type="password"
+              placeholder="Nova senha"
+              value={novaSenha}
+              onChange={(e) => setNovaSenha(e.target.value)}
+            />
+            <Input
+              type="password"
+              placeholder="Confirme a nova senha"
+              value={confirmarNovaSenha}
+              onChange={(e) => setConfirmarNovaSenha(e.target.value)}
+            />
+            {erroSenha && <div style={{ fontSize: 12.5, color: COLORS.rust }}>{erroSenha}</div>}
+            {okSenha && <div style={{ fontSize: 12.5, color: COLORS.sage }}>{okSenha}</div>}
+            <Button style={{ alignSelf: "flex-start" }} onClick={handleTrocarSenha} disabled={trocandoSenha}>
+              {trocandoSenha ? "Trocando…" : "Trocar senha"}
+            </Button>
+            <div style={{ fontSize: 11.5, color: COLORS.inkSoft }}>
+              Isso já atualiza os backups existentes pra abrirem com a nova senha também. Em outros aparelhos
+              conectados a esta biblioteca, você vai precisar digitar a nova senha também.
+            </div>
+
+            <div style={{ height: 1, background: COLORS.rule, margin: "4px 0" }} />
+
+            <label style={labelStyle}>Usar sem senha</label>
+            <div style={{ fontSize: 12, color: COLORS.inkSoft }}>
+              Desativa a tela de senha — o app abre direto em qualquer aparelho. Os dados (nomes, telefones,
+              valores combinados) ficam bem menos protegidos caso alguém acesse o Firestore diretamente.
+            </div>
+            {!confirmandoDesativar ? (
+              <Button variant="ghost" style={{ alignSelf: "flex-start" }} onClick={() => setConfirmandoDesativar(true)}>
+                Desativar senha
+              </Button>
+            ) : (
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <span style={{ fontSize: 12.5, color: COLORS.rust }}>Tem certeza? Isso não protege mais os dados.</span>
+                <Button
+                  style={{ background: COLORS.rust, border: "none", color: "#fff" }}
+                  onClick={handleDesativarSenha}
+                  disabled={trocandoSenha}
+                >
+                  {trocandoSenha ? "Desativando…" : "Confirmar"}
+                </Button>
+                <Button variant="ghost" onClick={() => setConfirmandoDesativar(false)}>
+                  Cancelar
+                </Button>
+              </div>
+            )}
+          </>
+        )}
+      </div>
     </Section>
   );
 }
 
 // ---------------- Tela de senha ----------------
-function TelaSenha({ temDadosSalvos, onDesbloquear, onApagarTudo }) {
+function TelaSenha({ temDadosSalvos, onDesbloquear, onApagarTudo, onSemSenha, cloudConfig, cloudStatus, onConfigurarNuvem, onDesligarNuvem }) {
   const [senha, setSenha] = useState("");
   const [confirmar, setConfirmar] = useState("");
   const [erro, setErro] = useState("");
   const [carregando, setCarregando] = useState(false);
   const [confirmandoReset, setConfirmandoReset] = useState(false);
+  const [confirmandoSemSenha, setConfirmandoSemSenha] = useState(false);
+  const [mostrarConfigNuvem, setMostrarConfigNuvem] = useState(false);
+  const [colado, setColado] = useState("");
+  const [docId, setDocId] = useState("principal");
+  const [erroNuvem, setErroNuvem] = useState("");
 
   async function entrar() {
     setErro("");
@@ -3231,6 +3735,19 @@ function TelaSenha({ temDadosSalvos, onDesbloquear, onApagarTudo }) {
     setCarregando(false);
     if (!r.ok) setErro(r.erro);
   }
+
+  function conectarNuvem() {
+    setErroNuvem("");
+    try {
+      const obj = parseFirebaseConfigColado(colado);
+      onConfigurarNuvem(obj, docId || "principal");
+      setMostrarConfigNuvem(false);
+    } catch (e) {
+      setErroNuvem("Não consegui ler essa configuração. Confere se colou o bloco inteiro do Firebase.");
+    }
+  }
+
+  const conectandoNuvem = !!cloudConfig && cloudStatus === "conectando";
 
   return (
     <div
@@ -3273,6 +3790,59 @@ function TelaSenha({ temDadosSalvos, onDesbloquear, onApagarTudo }) {
           {temDadosSalvos ? "Digite a senha pra abrir" : "Crie uma senha pra proteger os dados"}
         </div>
 
+        {!cloudConfig && !mostrarConfigNuvem && (
+          <div style={{ textAlign: "center", marginBottom: 16 }}>
+            <button
+              onClick={() => setMostrarConfigNuvem(true)}
+              style={{ background: "none", border: "none", color: COLORS.burgundy, fontSize: 12.5, textDecoration: "underline", cursor: "pointer" }}
+            >
+              Já uso isso em outro aparelho — conectar à nuvem primeiro
+            </button>
+          </div>
+        )}
+
+        {!cloudConfig && mostrarConfigNuvem && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 18 }}>
+            <label style={labelStyle}>Cole a configuração do Firebase (a mesma dos outros aparelhos)</label>
+            <textarea
+              value={colado}
+              onChange={(e) => setColado(e.target.value)}
+              placeholder={`const firebaseConfig = {\n  apiKey: "...",\n  projectId: "...",\n  ...\n};`}
+              rows={5}
+              style={{ ...inputBase, fontFamily: "'JetBrains Mono', monospace", fontSize: 12 }}
+            />
+            <label style={labelStyle}>Código da biblioteca (o mesmo usado nos outros aparelhos)</label>
+            <Input value={docId} onChange={(e) => setDocId(e.target.value)} placeholder="principal" />
+            {erroNuvem && <div style={{ color: COLORS.rust, fontSize: 12.5 }}>{erroNuvem}</div>}
+            <div style={{ display: "flex", gap: 8 }}>
+              <Button style={{ flex: 1 }} onClick={conectarNuvem}>
+                Conectar
+              </Button>
+              <Button variant="ghost" onClick={() => setMostrarConfigNuvem(false)}>
+                Cancelar
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {cloudConfig && (
+          <div style={{ textAlign: "center", fontSize: 12, color: COLORS.inkSoft, marginBottom: 16 }}>
+            {conectandoNuvem ? (
+              <span style={{ color: COLORS.gold }}>conectando à nuvem…</span>
+            ) : (
+              <>
+                conectado: <b>{cloudConfig.projectId}</b> · código <b>{cloudConfig.docId}</b>{" "}
+                <button
+                  onClick={onDesligarNuvem}
+                  style={{ background: "none", border: "none", color: COLORS.burgundy, fontSize: 12, textDecoration: "underline", cursor: "pointer" }}
+                >
+                  trocar
+                </button>
+              </>
+            )}
+          </div>
+        )}
+
         <Input
           type="password"
           placeholder="Senha"
@@ -3281,6 +3851,7 @@ function TelaSenha({ temDadosSalvos, onDesbloquear, onApagarTudo }) {
           onKeyDown={(e) => e.key === "Enter" && (temDadosSalvos ? entrar() : null)}
           style={{ marginBottom: 10 }}
           autoFocus
+          disabled={conectandoNuvem}
         />
         {!temDadosSalvos && (
           <Input
@@ -3290,16 +3861,42 @@ function TelaSenha({ temDadosSalvos, onDesbloquear, onApagarTudo }) {
             onChange={(e) => setConfirmar(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && entrar()}
             style={{ marginBottom: 10 }}
+            disabled={conectandoNuvem}
           />
         )}
 
         {erro && <div style={{ color: COLORS.rust, fontSize: 13, marginBottom: 10 }}>{erro}</div>}
 
-        <Button onClick={entrar} style={{ width: "100%" }} disabled={carregando}>
-          {carregando ? "Abrindo…" : temDadosSalvos ? "Entrar" : "Criar e continuar"}
+        <Button onClick={entrar} style={{ width: "100%" }} disabled={carregando || conectandoNuvem}>
+          {conectandoNuvem ? "Conectando…" : carregando ? "Abrindo…" : temDadosSalvos ? "Entrar" : "Criar e continuar"}
         </Button>
 
-        {temDadosSalvos && !confirmandoReset && (
+        {!conectandoNuvem && !temDadosSalvos && !confirmandoSemSenha && (
+          <div style={{ textAlign: "center", marginTop: 14 }}>
+            <button
+              onClick={() => setConfirmandoSemSenha(true)}
+              style={{ background: "none", border: "none", color: COLORS.inkSoft, fontSize: 12, textDecoration: "underline", cursor: "pointer" }}
+            >
+              usar sem senha
+            </button>
+          </div>
+        )}
+        {confirmandoSemSenha && (
+          <div style={{ marginTop: 14, textAlign: "center", fontSize: 12.5, color: COLORS.inkSoft }}>
+            Sem senha, os dados (nomes, telefones, valores) ficam bem menos protegidos caso alguém acesse o Firestore
+            diretamente. Só recomendado se isso não for um problema pra você.
+            <div style={{ marginTop: 8, display: "flex", gap: 8, justifyContent: "center" }}>
+              <Button variant="ghost" style={{ padding: "6px 12px", fontSize: 12.5 }} onClick={() => setConfirmandoSemSenha(false)}>
+                Cancelar
+              </Button>
+              <Button variant="subtle" style={{ padding: "6px 12px", fontSize: 12.5 }} onClick={onSemSenha}>
+                Usar sem senha
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {!conectandoNuvem && temDadosSalvos && !confirmandoReset && (
           <div style={{ textAlign: "center", marginTop: 14 }}>
             <button
               onClick={() => setConfirmandoReset(true)}

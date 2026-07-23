@@ -265,6 +265,13 @@ function fmtDate(iso) {
   const [y, m, d] = iso.split("-");
   return `${d}/${m}/${y}`;
 }
+function escapeHtml(s) {
+  return (s || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
 function linkReserva(livro) {
   const texto = `Oi! Vi no catálogo do ${bibliotecaNome} que o livro "${livro.titulo}" está disponível. Posso reservar?`;
   return `https://wa.me/${normalizaTelefone(whatsappContato)}?text=${encodeURIComponent(texto)}`;
@@ -326,6 +333,7 @@ function render() {
       const capaHtml = l.capaUrl
         ? `<img class="capa" src="${l.capaUrl}" alt="">`
         : `<div class="capa-vazia">📕</div>`;
+      const sinopseTexto = l.sinopse ? escapeHtml(l.sinopse).slice(0, 160) + (l.sinopse.length > 160 ? "…" : "") : "";
       return `
         <div class="livro">
           ${capaHtml}
@@ -333,7 +341,10 @@ function render() {
             <div class="titulo">${l.titulo}</div>
             ${l.autor ? `<div class="autor">${l.autor}</div>` : ""}
             ${l.categoria ? `<div class="autor">${l.categoria}</div>` : ""}
+            ${l.nivel ? `<div class="autor">${escapeHtml(l.nivel)}</div>` : ""}
             ${l.paginas ? `<div class="autor">${l.paginas} páginas</div>` : ""}
+            ${sinopseTexto ? `<div class="autor" style="margin-top:4px;">${sinopseTexto}</div>` : ""}
+            ${l.linkExterno ? `<a class="autor" style="text-decoration:underline;" href="${escapeHtml(l.linkExterno)}" target="_blank" rel="noreferrer">🔗 ver mais</a>` : ""}
             ${statusHtml}
           </div>
           ${botao}
