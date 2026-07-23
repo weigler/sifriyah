@@ -248,14 +248,43 @@ function nuvemOuvirPreCadastros(firebaseConfig, docId, onChange) {
       .onSnapshot((snap) => {
         const lista = [];
         snap.forEach((doc) => lista.push({ id: doc.id, ...doc.data() }));
-        lista.sort((a, b) => (b.criadoEm || 0) - (a.criadoEm || 0));
-        onChange(lista);
+        // só mostra os que ainda não foram aceitos — os aceitos ficam guardados
+        // por um tempo (rede de segurança), mas somem da lista de revisão
+        const pendentes = lista.filter((pc) => !pc.aceito);
+        pendentes.sort((a, b) => (b.criadoEm || 0) - (a.criadoEm || 0));
+        onChange(pendentes);
       });
   });
 }
 async function nuvemRemoverPreCadastro(firebaseConfig, id) {
   const db = await inicializarFirebase(firebaseConfig);
   await db.collection("sifriyah_precadastros").doc(id).delete();
+}
+// em vez de apagar na hora, marca como aceito — assim fica guardado como histórico/comprovante
+// por um tempo, caso precise conferir depois, mas some da lista de pendentes pra revisar
+async function nuvemMarcarAceitoPreCadastro(firebaseConfig, id) {
+  const db = await inicializarFirebase(firebaseConfig);
+  await db.collection("sifriyah_precadastros").doc(id).update({ aceito: true, aceitoEm: Date.now() });
+}
+const DIAS_GUARDAR_PRECADASTRO_ACEITO = 60;
+// limpa pré-cadastros já aceitos há mais de 60 dias — chamado uma vez por sessão
+async function nuvemLimparPreCadastrosAntigos(firebaseConfig, docId) {
+  const db = await inicializarFirebase(firebaseConfig);
+  const snap = await db
+    .collection("sifriyah_precadastros")
+    .where("biblioteca", "==", docId)
+    .where("aceito", "==", true)
+    .get();
+  const limite = Date.now() - DIAS_GUARDAR_PRECADASTRO_ACEITO * 24 * 60 * 60 * 1000;
+  const paraApagar = [];
+  snap.forEach((doc) => {
+    const d = doc.data();
+    if (d.aceitoEm && d.aceitoEm < limite) paraApagar.push(doc.ref);
+  });
+  if (paraApagar.length === 0) return;
+  const batch = db.batch();
+  paraApagar.forEach((ref) => batch.delete(ref));
+  await batch.commit();
 }
 
 // ---- Backups (cópias completas com data/hora, separadas do salvamento "ao vivo") ----
@@ -859,9 +888,18 @@ export default function App() {
     nuvemOuvirPreCadastros(cloudConfig, cloudDocId, setPreCadastros);
   }, [cloudConfig, cloudDocId, unlocked]);
 
+  // uma vez por sessão, apaga pré-cadastros já aceitos há mais de 60 dias
+  useEffect(() => {
+    if (!cloudConfig || !unlocked) return;
+    nuvemLimparPreCadastrosAntigos(cloudConfig, cloudDocId).catch((e) =>
+      console.error("Erro ao limpar pré-cadastros antigos:", e)
+    );
+  }, [cloudConfig, cloudDocId, unlocked]);
+
   function importarPreCadastro(pc) {
     upsertPessoa({ nome: pc.nome || "", sobrenome: pc.sobrenome || "", telefone: pc.telefone || "", email: pc.email || "" });
-    nuvemRemoverPreCadastro(cloudConfig, pc.id).catch(() => {});
+    // marca como aceito em vez de apagar — fica guardado por 60 dias como comprovante
+    nuvemMarcarAceitoPreCadastro(cloudConfig, pc.id).catch(() => {});
   }
   function descartarPreCadastro(pc) {
     nuvemRemoverPreCadastro(cloudConfig, pc.id).catch(() => {});
