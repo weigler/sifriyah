@@ -610,8 +610,8 @@ function BotaoExcluir({ onConfirm, label = "excluir", small = false }) {
 // todos com a mesma largura e altura
 function CampoCol({ label, children }) {
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 4, flex: "1 1 0", minWidth: 88 }}>
-      <label style={{ ...labelStyle, marginBottom: 0, fontSize: 11, whiteSpace: "nowrap" }}>{label}</label>
+    <div style={{ display: "flex", flexDirection: "column", gap: 4, flex: "1 1 130px", minWidth: 110 }}>
+      <label style={{ ...labelStyle, marginBottom: 0, fontSize: 11, lineHeight: 1.25 }}>{label}</label>
       {children}
     </div>
   );
@@ -1459,7 +1459,7 @@ export default function App() {
 
   // ---- Ações: Livros ----
   function addLivro(dados) {
-    if (!dados.titulo.trim()) return;
+    if (!dados.titulo.trim() || !(dados.autor || "").trim()) return;
     setLivros((prev) => [
       ...prev,
       {
@@ -1483,6 +1483,7 @@ export default function App() {
   }
 
   function editarLivro(id, dados) {
+    if (!dados.titulo.trim() || !(dados.autor || "").trim()) return;
     setLivros((prev) =>
       prev.map((l) =>
         l.id === id
@@ -2634,10 +2635,14 @@ function AcervoTab({
         }}
       >
         <label style={labelStyle}>Cadastrar livro</label>
+
+        {/* 1 — Título · 2 — Autor (obrigatório) */}
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <Input placeholder="Título" value={titulo} onChange={(e) => setTitulo(e.target.value)} style={{ flex: "2 1 160px" }} />
-          <Input placeholder="Autor (opcional)" value={autor} onChange={(e) => setAutor(e.target.value)} style={{ flex: "2 1 140px" }} />
+          <Input placeholder="Autor" value={autor} onChange={(e) => setAutor(e.target.value)} style={{ flex: "2 1 140px" }} />
         </div>
+
+        {/* 3 — Páginas / Aquisição */}
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <Input
             type="number"
@@ -2650,6 +2655,10 @@ function AcervoTab({
             <label style={{ ...labelStyle, marginBottom: 2, display: "block" }}>Dia de aquisição</label>
             <Input type="date" value={dataAquisicao} onChange={(e) => setDataAquisicao(e.target.value)} />
           </div>
+        </div>
+
+        {/* 4 — Categoria / Nível de leitura */}
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <select value={categoria} onChange={(e) => setCategoria(e.target.value)} style={{ ...inputBase, flex: "1 1 140px" }}>
             <option value="">Sem categoria</option>
             {categorias.map((c) => (
@@ -2663,33 +2672,10 @@ function AcervoTab({
             ))}
           </select>
         </div>
-        {tags.length > 0 && (
-          <details>
-            <summary style={{ fontSize: 12.5, color: COLORS.burgundy, cursor: "pointer" }}>marcar tags</summary>
-            <div style={{ marginTop: 8 }}>
-              <SeletorTags
-                todasTags={tags}
-                selecionadas={tagsSelecionadas}
-                onToggle={(t) => alternarTag(tagsSelecionadas, setTagsSelecionadas, t)}
-              />
-            </div>
-          </details>
-        )}
-        <label style={{ ...labelStyle, marginBottom: 2 }}>Sinopse (opcional)</label>
-        <textarea
-          value={sinopse}
-          onChange={(e) => setSinopse(e.target.value)}
-          rows={3}
-          placeholder="Do que o livro trata…"
-          style={{ ...inputBase, fontFamily: "'Source Serif 4', serif" }}
-        />
-        <Input
-          placeholder="Link (Amazon, editora, etc. — opcional)"
-          value={linkExterno}
-          onChange={(e) => setLinkExterno(e.target.value)}
-        />
-        <div style={{ display: "flex", gap: 8 }}>
-          <CampoCol label="Valor semanal (semanas iniciais)">
+
+        {/* 5 — Valor semanal / Valor extra / Unidades / Semanas iniciais */}
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <CampoCol label="Valor semanal">
             <Input
               type="number"
               step="0.01"
@@ -2729,6 +2715,39 @@ function AcervoTab({
             />
           </CampoCol>
         </div>
+
+        {/* 6 — Sinopse */}
+        <label style={{ ...labelStyle, marginBottom: 2 }}>Sinopse (opcional)</label>
+        <textarea
+          value={sinopse}
+          onChange={(e) => setSinopse(e.target.value)}
+          rows={3}
+          placeholder="Do que o livro trata…"
+          style={{ ...inputBase, fontFamily: "'Source Serif 4', serif" }}
+        />
+
+        {/* 7 — Tags */}
+        {tags.length > 0 && (
+          <details>
+            <summary style={{ fontSize: 12.5, color: COLORS.burgundy, cursor: "pointer" }}>marcar tags</summary>
+            <div style={{ marginTop: 8 }}>
+              <SeletorTags
+                todasTags={tags}
+                selecionadas={tagsSelecionadas}
+                onToggle={(t) => alternarTag(tagsSelecionadas, setTagsSelecionadas, t)}
+              />
+            </div>
+          </details>
+        )}
+
+        {/* 8 — Link Amazon */}
+        <Input
+          placeholder="Link (Amazon, editora, etc. — opcional)"
+          value={linkExterno}
+          onChange={(e) => setLinkExterno(e.target.value)}
+        />
+
+        {/* 9 — Capa */}
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <Input
             placeholder="Link da capa (opcional)"
@@ -2746,7 +2765,9 @@ function AcervoTab({
         {avisoCapa && <div style={{ fontSize: 12, color: COLORS.inkSoft }}>{avisoCapa}</div>}
         <Button
           style={{ alignSelf: "flex-start" }}
+          disabled={!titulo.trim() || !autor.trim()}
           onClick={() => {
+            if (!titulo.trim() || !autor.trim()) return;
             onAdd({
               titulo,
               autor,
@@ -2825,8 +2846,8 @@ function AcervoTab({
                       ))}
                     </select>
                   </div>
-                  <div style={{ display: "flex", gap: 8 }}>
-                    <CampoCol label="Valor semanal (semanas iniciais)">
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <CampoCol label="Valor semanal">
                       <Input
                         type="number"
                         step="0.01"
@@ -2866,6 +2887,13 @@ function AcervoTab({
                       />
                     </CampoCol>
                   </div>
+                  <label style={{ ...labelStyle, marginBottom: 2 }}>Sinopse (opcional)</label>
+                  <textarea
+                    value={editSinopse}
+                    onChange={(e) => setEditSinopse(e.target.value)}
+                    rows={3}
+                    style={{ ...inputBase, fontFamily: "'Source Serif 4', serif" }}
+                  />
                   {tags.length > 0 && (
                     <details>
                       <summary style={{ fontSize: 12.5, color: COLORS.burgundy, cursor: "pointer" }}>marcar tags</summary>
@@ -2878,13 +2906,6 @@ function AcervoTab({
                       </div>
                     </details>
                   )}
-                  <label style={{ ...labelStyle, marginBottom: 2 }}>Sinopse (opcional)</label>
-                  <textarea
-                    value={editSinopse}
-                    onChange={(e) => setEditSinopse(e.target.value)}
-                    rows={3}
-                    style={{ ...inputBase, fontFamily: "'Source Serif 4', serif" }}
-                  />
                   <Input
                     placeholder="Link (Amazon, editora, etc.)"
                     value={editLinkExterno}
@@ -2901,7 +2922,7 @@ function AcervoTab({
                   </div>
                   {avisoCapaEdit && <div style={{ fontSize: 12, color: COLORS.inkSoft }}>{avisoCapaEdit}</div>}
                   <div style={{ display: "flex", gap: 8 }}>
-                    <Button style={{ padding: "7px 12px", fontSize: 13 }} onClick={salvarEdicao}>
+                    <Button style={{ padding: "7px 12px", fontSize: 13 }} disabled={!editTitulo.trim() || !editAutor.trim()} onClick={salvarEdicao}>
                       Salvar
                     </Button>
                     <Button variant="ghost" style={{ padding: "7px 12px", fontSize: 13 }} onClick={() => setEditandoId(null)}>
