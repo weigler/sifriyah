@@ -163,8 +163,10 @@ async function decryptJSON(raw, password) {
 
 // ---- Sincronização em nuvem (Firebase Firestore) — opcional ----
 const CLOUD_CONFIG_KEY = "sifriyah-cloud-config"; // fica salvo local em cada aparelho (não é segredo)
+const ADMIN_EMAIL_KEY = "sifriyah-admin-email"; // só o e-mail, nunca a senha, pra mostrar "logado como..." sem esperar o Firebase responder
 let _fbApp = null;
 let _fbDb = null;
+let _fbAuth = null;
 
 function lerConfigNuvem() {
   try {
@@ -217,11 +219,31 @@ async function inicializarFirebase(firebaseConfig) {
   if (_fbDb) return _fbDb;
   await carregarScript("https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js");
   await carregarScript("https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore-compat.js");
+  await carregarScript("https://www.gstatic.com/firebasejs/10.13.0/firebase-auth-compat.js");
   // eslint-disable-next-line no-undef
   _fbApp = firebase.initializeApp(firebaseConfig);
   // eslint-disable-next-line no-undef
   _fbDb = firebase.firestore();
+  // eslint-disable-next-line no-undef
+  _fbAuth = firebase.auth();
   return _fbDb;
+}
+
+// login de administrador (Firebase Authentication) — é diferente da senha do app:
+// essa senha aqui é o que o Firestore reconhece pra liberar acesso de admin nas regras;
+// a senha do app continua sendo só a chave de criptografia dos dados
+async function obterFirebaseAuth(firebaseConfig) {
+  await inicializarFirebase(firebaseConfig);
+  return _fbAuth;
+}
+async function entrarComoAdminNuvem(firebaseConfig, email, senha) {
+  const auth = await obterFirebaseAuth(firebaseConfig);
+  const cred = await auth.signInWithEmailAndPassword(email, senha);
+  return cred.user;
+}
+async function sairComoAdminNuvem(firebaseConfig) {
+  const auth = await obterFirebaseAuth(firebaseConfig);
+  await auth.signOut();
 }
 
 // seções em que os dados são divididos — cada uma é salva e sincronizada separadamente,
@@ -350,6 +372,11 @@ async function localListarBackups() {
 }
 async function localSalvarListaBackups(lista) {
   await window.storage.set(BACKUP_LOCAL_KEY, JSON.stringify(lista), false);
+}
+
+// distingue "sem permissão" (precisa logar como admin) de outros erros de rede/nuvem
+function statusParaErro(e) {
+  return e && e.code === "permission-denied" ? "sem-login" : "erro";
 }
 
 function nomeCompleto(p) {
@@ -793,11 +820,56 @@ function App() {
   // ---- Nuvem (opcional) ----
   const [cloudConfig, setCloudConfigState] = useState(() => lerConfigNuvem());
   const [cloudDocId, setCloudDocId] = useState(() => lerConfigNuvem()?.docId || "principal");
-  const [cloudStatus, setCloudStatus] = useState("desligada"); // desligada | conectando | sincronizada | erro
+  const [cloudStatus, setCloudStatus] = useState("desligada"); // desligada | conectando | sincronizada | erro | sem-login
   // guarda, por seção, o "atualizadoEm" que este aparelho já aplicou — serve pra:
   // 1) ignorar o eco do próprio salvamento quando o ouvinte em tempo real dispara
   // 2) aplicar só o que realmente é novidade vinda de outro aparelho
   const ultimosTimestampsRef = React.useRef({});
+
+  // ---- Login de administrador (Firebase Authentication) — protege o Firestore de verdade;
+  // é diferente da senha do app, que só criptografa/descriptografa os dados ----
+  const [adminEmail, setAdminEmail] = useState(() => localStorage.getItem(ADMIN_EMAIL_KEY) || "");
+  const [statusAdminAuth, setStatusAdminAuth] = useState("deslogado"); // deslogado | entrando | logado | erro
+
+  useEffect(() => {
+    if (!cloudConfig) return;
+    let cancelado = false;
+    obterFirebaseAuth(cloudConfig).then((auth) => {
+      if (cancelado) return;
+      auth.onAuthStateChanged((user) => {
+        if (user) {
+          setAdminEmail(user.email || "");
+          localStorage.setItem(ADMIN_EMAIL_KEY, user.email || "");
+          setStatusAdminAuth("logado");
+        } else {
+          setStatusAdminAuth("deslogado");
+        }
+      });
+    });
+    return () => {
+      cancelado = true;
+    };
+  }, [cloudConfig]);
+
+  async function entrarAdmin(email, senha) {
+    if (!cloudConfig) return { ok: false, erro: "Conecte a nuvem primeiro." };
+    setStatusAdminAuth("entrando");
+    try {
+      await entrarComoAdminNuvem(cloudConfig, email, senha);
+      setStatusAdminAuth("logado");
+      return { ok: true };
+    } catch (e) {
+      setStatusAdminAuth("erro");
+      return { ok: false, erro: "E-mail ou senha incorretos." };
+    }
+  }
+  async function sairAdmin() {
+    if (!cloudConfig) return;
+    await sairComoAdminNuvem(cloudConfig).catch(() => {});
+    localStorage.removeItem(ADMIN_EMAIL_KEY);
+    setAdminEmail("");
+    setStatusAdminAuth("deslogado");
+  }
 
   // busca as seções salvas (nuvem ou local) sem descriptografar — usado só pra saber se existe algo
   async function carregarSecoesBrutas() {
@@ -880,7 +952,7 @@ function App() {
         }
       } catch (e) {
         setTemDadosSalvos(false);
-        setCloudStatus(cloudConfig ? "erro" : "desligada");
+        setCloudStatus(cloudConfig ? statusParaErro(e) : "desligada");
       }
       setLoaded(true);
     })();
@@ -1057,7 +1129,7 @@ function App() {
         setCloudStatus(cloudConfig ? "sincronizada" : "desligada");
       } catch (e) {
         console.error("Erro ao salvar acervo:", e);
-        setCloudStatus(cloudConfig ? "erro" : "desligada");
+        setCloudStatus(cloudConfig ? statusParaErro(e) : "desligada");
       }
       concluido = true;
       terminarSalvando();
@@ -1079,7 +1151,7 @@ function App() {
         setCloudStatus(cloudConfig ? "sincronizada" : "desligada");
       } catch (e) {
         console.error("Erro ao salvar pessoas:", e);
-        setCloudStatus(cloudConfig ? "erro" : "desligada");
+        setCloudStatus(cloudConfig ? statusParaErro(e) : "desligada");
       }
       concluido = true;
       terminarSalvando();
@@ -1101,7 +1173,7 @@ function App() {
         setCloudStatus(cloudConfig ? "sincronizada" : "desligada");
       } catch (e) {
         console.error("Erro ao salvar empréstimos:", e);
-        setCloudStatus(cloudConfig ? "erro" : "desligada");
+        setCloudStatus(cloudConfig ? statusParaErro(e) : "desligada");
       }
       concluido = true;
       terminarSalvando();
@@ -1123,7 +1195,7 @@ function App() {
         setCloudStatus(cloudConfig ? "sincronizada" : "desligada");
       } catch (e) {
         console.error("Erro ao salvar ajustes:", e);
-        setCloudStatus(cloudConfig ? "erro" : "desligada");
+        setCloudStatus(cloudConfig ? statusParaErro(e) : "desligada");
       }
       concluido = true;
       terminarSalvando();
@@ -1672,6 +1744,8 @@ function App() {
         cloudStatus={cloudStatus}
         onConfigurarNuvem={configurarNuvem}
         onDesligarNuvem={desligarNuvem}
+        onEntrarAdmin={entrarAdmin}
+        statusAdminAuth={statusAdminAuth}
       />
     );
   }
@@ -1881,6 +1955,10 @@ function App() {
             onTrocarSenha={trocarSenha}
             onDesativarSenha={desativarSenha}
             onAtivarSenha={ativarSenha}
+            adminEmail={adminEmail}
+            statusAdminAuth={statusAdminAuth}
+            onEntrarAdmin={entrarAdmin}
+            onSairAdmin={sairAdmin}
           />
         )}
       </div>
@@ -3637,6 +3715,10 @@ function AjustesTab({
   onTrocarSenha,
   onDesativarSenha,
   onAtivarSenha,
+  adminEmail,
+  statusAdminAuth,
+  onEntrarAdmin,
+  onSairAdmin,
 }) {
   const [pix, setPix] = useState(config.pix || "");
   const [recebedor, setRecebedor] = useState(config.recebedor || "");
@@ -3655,6 +3737,10 @@ function AjustesTab({
   const [colado, setColado] = useState("");
   const [docId, setDocId] = useState(cloudConfig?.docId || "principal");
   const [erroNuvem, setErroNuvem] = useState("");
+  const [emailAdminForm, setEmailAdminForm] = useState("");
+  const [senhaAdminForm, setSenhaAdminForm] = useState("");
+  const [erroAdmin, setErroAdmin] = useState("");
+  const [entrandoAdmin, setEntrandoAdmin] = useState(false);
   const [restaurandoId, setRestaurandoId] = useState(null);
   const [restauradoOk, setRestauradoOk] = useState(false);
 
@@ -3758,11 +3844,24 @@ function AjustesTab({
     }
   }
 
+  async function handleEntrarAdmin() {
+    setErroAdmin("");
+    setEntrandoAdmin(true);
+    const r = await onEntrarAdmin(emailAdminForm, senhaAdminForm);
+    setEntrandoAdmin(false);
+    if (r.ok) {
+      setSenhaAdminForm("");
+    } else {
+      setErroAdmin(r.erro);
+    }
+  }
+
   const statusLabel = {
     desligada: { texto: "desligada — salvando só neste aparelho", cor: COLORS.inkSoft },
     conectando: { texto: "conectando…", cor: COLORS.gold },
     sincronizada: { texto: "sincronizada com a nuvem ✓", cor: COLORS.sage },
     erro: { texto: "erro ao conectar — confere a configuração", cor: COLORS.rust },
+    "sem-login": { texto: "sem permissão — entre com o login de administrador abaixo", cor: COLORS.rust },
   }[cloudStatus];
 
   return (
@@ -3987,6 +4086,57 @@ function AjustesTab({
         )}
       </div>
 
+      {cloudConfig && (
+        <div
+          style={{
+            background: COLORS.card,
+            border: `1.5px solid ${COLORS.rule}`,
+            borderRadius: 10,
+            padding: 16,
+            marginTop: 16,
+            display: "flex",
+            flexDirection: "column",
+            gap: 10,
+          }}
+        >
+          <div style={{ fontFamily: "'Playfair Display', serif", fontWeight: 700, fontSize: 16 }}>
+            Login de administrador
+          </div>
+          <div style={{ fontSize: 12, color: COLORS.inkSoft }}>
+            Protege o Firestore de verdade — é diferente da senha do app (que só criptografa os dados). Precisa
+            estar logado aqui pra sincronizar, ver e revisar pré-cadastros. Configure em Firebase Console →
+            Authentication (veja as instruções que te passei).
+          </div>
+          {statusAdminAuth === "logado" ? (
+            <>
+              <div style={{ fontSize: 13, color: COLORS.sage }}>✓ Logado como {adminEmail}</div>
+              <Button variant="ghost" style={{ alignSelf: "flex-start" }} onClick={onSairAdmin}>
+                Sair
+              </Button>
+            </>
+          ) : (
+            <>
+              <Input
+                type="email"
+                placeholder="E-mail de administrador"
+                value={emailAdminForm}
+                onChange={(e) => setEmailAdminForm(e.target.value)}
+              />
+              <Input
+                type="password"
+                placeholder="Senha de administrador"
+                value={senhaAdminForm}
+                onChange={(e) => setSenhaAdminForm(e.target.value)}
+              />
+              {erroAdmin && <div style={{ fontSize: 12.5, color: COLORS.rust }}>{erroAdmin}</div>}
+              <Button style={{ alignSelf: "flex-start" }} onClick={handleEntrarAdmin} disabled={entrandoAdmin}>
+                {entrandoAdmin ? "Entrando…" : "Entrar"}
+              </Button>
+            </>
+          )}
+        </div>
+      )}
+
       <div
         style={{
           background: COLORS.card,
@@ -4182,7 +4332,18 @@ function AjustesTab({
 }
 
 // ---------------- Tela de senha ----------------
-function TelaSenha({ temDadosSalvos, onDesbloquear, onApagarTudo, onSemSenha, cloudConfig, cloudStatus, onConfigurarNuvem, onDesligarNuvem }) {
+function TelaSenha({
+  temDadosSalvos,
+  onDesbloquear,
+  onApagarTudo,
+  onSemSenha,
+  cloudConfig,
+  cloudStatus,
+  onConfigurarNuvem,
+  onDesligarNuvem,
+  onEntrarAdmin,
+  statusAdminAuth,
+}) {
   const [senha, setSenha] = useState("");
   const [confirmar, setConfirmar] = useState("");
   const [erro, setErro] = useState("");
@@ -4192,6 +4353,8 @@ function TelaSenha({ temDadosSalvos, onDesbloquear, onApagarTudo, onSemSenha, cl
   const [mostrarConfigNuvem, setMostrarConfigNuvem] = useState(false);
   const [colado, setColado] = useState("");
   const [docId, setDocId] = useState("principal");
+  const [emailAdminForm, setEmailAdminForm] = useState("");
+  const [senhaAdminForm, setSenhaAdminForm] = useState("");
   const [erroNuvem, setErroNuvem] = useState("");
 
   async function entrar() {
@@ -4214,11 +4377,18 @@ function TelaSenha({ temDadosSalvos, onDesbloquear, onApagarTudo, onSemSenha, cl
     if (!r.ok) setErro(r.erro);
   }
 
-  function conectarNuvem() {
+  async function conectarNuvem() {
     setErroNuvem("");
     try {
       const obj = parseFirebaseConfigColado(colado);
       onConfigurarNuvem(obj, docId || "principal");
+      if (emailAdminForm && senhaAdminForm) {
+        const r = await onEntrarAdmin(emailAdminForm, senhaAdminForm);
+        if (!r.ok) {
+          setErroNuvem(r.erro);
+          return;
+        }
+      }
       setMostrarConfigNuvem(false);
     } catch (e) {
       setErroNuvem("Não consegui ler essa configuração. Confere se colou o bloco inteiro do Firebase.");
@@ -4291,6 +4461,10 @@ function TelaSenha({ temDadosSalvos, onDesbloquear, onApagarTudo, onSemSenha, cl
             />
             <label style={labelStyle}>Código da biblioteca (o mesmo usado nos outros aparelhos)</label>
             <Input value={docId} onChange={(e) => setDocId(e.target.value)} placeholder="principal" />
+            <label style={labelStyle}>E-mail de administrador</label>
+            <Input type="email" value={emailAdminForm} onChange={(e) => setEmailAdminForm(e.target.value)} />
+            <label style={labelStyle}>Senha de administrador</label>
+            <Input type="password" value={senhaAdminForm} onChange={(e) => setSenhaAdminForm(e.target.value)} />
             {erroNuvem && <div style={{ color: COLORS.rust, fontSize: 12.5 }}>{erroNuvem}</div>}
             <div style={{ display: "flex", gap: 8 }}>
               <Button style={{ flex: 1 }} onClick={conectarNuvem}>
