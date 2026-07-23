@@ -579,48 +579,71 @@ function SeletorTags({ todasTags, selecionadas, onToggle }) {
 
 
 // (pra evitar devolver sem querer sem ter registrado o pagamento)
-function BotaoDevolver({ restante, onConfirm }) {
-  const [confirmando, setConfirmando] = useState(false);
-  const timerRef = React.useRef(null);
+function BotaoDevolver({ restante, descontoSugerido, diasRestantes, onConfirmar }) {
+  const [aberto, setAberto] = useState(false);
+  const [desconto, setDesconto] = useState(descontoSugerido > 0 ? String(descontoSugerido) : "");
 
-  if (restante <= 0) {
+  const precisaPainel = restante > 0 || descontoSugerido > 0;
+
+  if (!precisaPainel) {
     return (
-      <Button variant="ghost" style={{ padding: "7px 12px", fontSize: 13 }} onClick={onConfirm}>
+      <Button variant="ghost" style={{ padding: "7px 12px", fontSize: 13 }} onClick={() => onConfirmar(0)}>
         Marcar devolvido
       </Button>
     );
   }
 
-  function clicar() {
-    if (confirmando) {
-      clearTimeout(timerRef.current);
-      setConfirmando(false);
-      onConfirm();
-      return;
-    }
-    setConfirmando(true);
-    timerRef.current = setTimeout(() => setConfirmando(false), 4000);
+  if (!aberto) {
+    return (
+      <Button variant="ghost" style={{ padding: "7px 12px", fontSize: 13 }} onClick={() => setAberto(true)}>
+        Marcar devolvido
+      </Button>
+    );
   }
 
+  const valorDesconto = parseFloat(desconto) || 0;
+
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-      {confirmando && (
-        <span style={{ fontSize: 12, color: COLORS.rust }}>
-          ainda falta {fmtMoney(restante)} — confirma devolver mesmo assim?
-        </span>
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 6,
+        background: "#FBF3DC",
+        border: `1px solid ${COLORS.gold}`,
+        borderRadius: 8,
+        padding: 10,
+        width: "100%",
+      }}
+    >
+      {restante > 0 && (
+        <div style={{ fontSize: 12, color: COLORS.rust }}>ainda falta {fmtMoney(restante)} do combinado.</div>
       )}
-      <Button
-        style={{
-          padding: "7px 12px",
-          fontSize: 13,
-          ...(confirmando
-            ? { background: COLORS.rust, border: "none", color: "#fff" }
-            : { background: "transparent", color: COLORS.burgundy, border: `1.5px solid ${COLORS.burgundy}` }),
-        }}
-        onClick={clicar}
-      >
-        {confirmando ? "Confirmar devolução" : "Marcar devolvido"}
-      </Button>
+      {descontoSugerido > 0 && (
+        <div style={{ fontSize: 12, color: COLORS.sage }}>
+          devolvendo {diasRestantes} dia{diasRestantes === 1 ? "" : "s"} antes do prazo — desconto sugerido{" "}
+          {fmtMoney(descontoSugerido)}
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <label style={{ fontSize: 11.5, color: COLORS.inkSoft, whiteSpace: "nowrap" }}>desconto (R$)</label>
+        <Input
+          type="number"
+          step="0.01"
+          min="0"
+          value={desconto}
+          onChange={(e) => setDesconto(e.target.value)}
+          style={{ width: 90, padding: "5px 8px", fontSize: 12.5 }}
+        />
+      </div>
+      <div style={{ display: "flex", gap: 8 }}>
+        <Button style={{ padding: "6px 12px", fontSize: 12.5 }} onClick={() => onConfirmar(valorDesconto)}>
+          Confirmar devolução
+        </Button>
+        <Button variant="ghost" style={{ padding: "6px 12px", fontSize: 12.5 }} onClick={() => setAberto(false)}>
+          Cancelar
+        </Button>
+      </div>
     </div>
   );
 }
@@ -1386,9 +1409,34 @@ export default function App() {
     ]);
   }
 
-  function marcarDevolvido(id) {
+  function marcarDevolvido(id, desconto) {
+    const abatimento = parseFloat(desconto) || 0;
     setEmprestimos((prev) =>
-      prev.map((e) => (e.id === id ? { ...e, devolvido: true, dataDevolucao: todayISO() } : e))
+      prev.map((e) =>
+        e.id === id
+          ? {
+              ...e,
+              devolvido: true,
+              dataDevolucao: todayISO(),
+              valorCombinado: abatimento > 0 ? Math.max(0, (e.valorCombinado || 0) - abatimento) : e.valorCombinado,
+            }
+          : e
+      )
+    );
+  }
+
+  // acrescenta mais uma semana ao prazo do empréstimo, e já soma o valor semanal do livro
+  // (quando cadastrado) ao valor combinado — pode ser clicado toda semana, se precisar
+  function renovarSemana(id) {
+    setEmprestimos((prev) =>
+      prev.map((e) => {
+        if (e.id !== id) return e;
+        const livro = livroById(e.livroId);
+        const baseParaSomar = e.prazo || todayISO();
+        const novoPrazo = somarSemanas(baseParaSomar, 1);
+        const acrescimo = livro && livro.valorSemanal ? livro.valorSemanal : 0;
+        return { ...e, prazo: novoPrazo, valorCombinado: (e.valorCombinado || 0) + acrescimo };
+      })
     );
   }
 
@@ -1603,6 +1651,7 @@ export default function App() {
             config={config}
             onAdd={addEmprestimo}
             onDevolver={marcarDevolvido}
+            onRenovarSemana={renovarSemana}
             onPagar={addPagamento}
             onRemoverPagamento={removerPagamento}
             onRemover={removeEmprestimo}
@@ -1693,6 +1742,7 @@ function EmprestimosTab({
   config,
   onAdd,
   onDevolver,
+  onRenovarSemana,
   onPagar,
   onRemoverPagamento,
   onRemover,
@@ -1993,6 +2043,9 @@ function EmprestimosTab({
             const pessoa = pessoaById(emp.pessoaId);
             const pago = totalPago(emp);
             const restante = Math.max(0, (emp.valorCombinado || 0) - pago);
+            const diasRestantes = !emp.devolvido && emp.prazo ? Math.max(0, -daysBetween(emp.prazo)) : 0;
+            const semanasNaoUsadas = Math.floor(diasRestantes / 7);
+            const descontoSugerido = livro && livro.valorSemanal ? semanasNaoUsadas * livro.valorSemanal : 0;
             return (
               <div
                 key={emp.id}
@@ -2073,7 +2126,24 @@ function EmprestimosTab({
                     >
                       Registrar pagamento
                     </Button>
-                    {!emp.devolvido && <BotaoDevolver restante={restante} onConfirm={() => onDevolver(emp.id)} />}
+                    {!emp.devolvido && (
+                      <Button
+                        variant="subtle"
+                        style={{ padding: "7px 12px", fontSize: 13 }}
+                        onClick={() => onRenovarSemana(emp.id)}
+                        title="Adia o prazo em 7 dias e soma o valor semanal do livro, se cadastrado"
+                      >
+                        📅 +1 semana
+                      </Button>
+                    )}
+                    {!emp.devolvido && (
+                      <BotaoDevolver
+                        restante={restante}
+                        descontoSugerido={descontoSugerido}
+                        diasRestantes={diasRestantes}
+                        onConfirmar={(desconto) => onDevolver(emp.id, desconto)}
+                      />
+                    )}
                   </div>
 
                   {pessoa && pessoa.telefone && restante > 0 && (
