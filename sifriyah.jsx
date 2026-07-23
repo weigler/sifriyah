@@ -4357,6 +4357,15 @@ function TelaSenha({
   const [emailAdminForm, setEmailAdminForm] = useState("");
   const [senhaAdminForm, setSenhaAdminForm] = useState("");
   const [erroNuvem, setErroNuvem] = useState("");
+  const [emailAdminLock, setEmailAdminLock] = useState("");
+  const [senhaAdminLock, setSenhaAdminLock] = useState("");
+  const [erroAdminLock, setErroAdminLock] = useState("");
+
+  async function fazerLoginAdmin() {
+    setErroAdminLock("");
+    const r = await onEntrarAdmin(emailAdminLock, senhaAdminLock);
+    if (!r.ok) setErroAdminLock(r.erro);
+  }
 
   async function entrar() {
     setErro("");
@@ -4489,13 +4498,42 @@ function TelaSenha({
                   onClick={onDesligarNuvem}
                   style={{ background: "none", border: "none", color: COLORS.burgundy, fontSize: 12, textDecoration: "underline", cursor: "pointer" }}
                 >
-                  trocar
+                  trocar / desconectar da nuvem
                 </button>
               </>
             )}
           </div>
         )}
 
+        {cloudConfig && !conectandoNuvem && statusAdminAuth !== "logado" && (
+          <div style={{ marginBottom: 18, padding: 12, background: COLORS.cream, borderRadius: 8, border: `1.5px solid ${COLORS.rule}` }}>
+            <div style={{ fontSize: 12.5, color: COLORS.inkSoft, marginBottom: 8, textAlign: "center" }}>
+              Este aparelho precisa logar como administrador antes de abrir a biblioteca.
+            </div>
+            <label style={labelStyle}>E-mail de administrador</label>
+            <Input
+              type="email"
+              value={emailAdminLock}
+              onChange={(e) => setEmailAdminLock(e.target.value)}
+              style={{ marginBottom: 8, marginTop: 4 }}
+            />
+            <label style={labelStyle}>Senha de administrador</label>
+            <Input
+              type="password"
+              value={senhaAdminLock}
+              onChange={(e) => setSenhaAdminLock(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && fazerLoginAdmin()}
+              style={{ marginBottom: 8, marginTop: 4 }}
+            />
+            {erroAdminLock && <div style={{ color: COLORS.rust, fontSize: 12, marginBottom: 8 }}>{erroAdminLock}</div>}
+            <Button style={{ width: "100%" }} onClick={fazerLoginAdmin} disabled={statusAdminAuth === "entrando"}>
+              {statusAdminAuth === "entrando" ? "Entrando…" : "Entrar como administrador"}
+            </Button>
+          </div>
+        )}
+
+        {(!cloudConfig || statusAdminAuth === "logado") && (
+          <>
         <Input
           type="password"
           placeholder="Senha"
@@ -4571,6 +4609,8 @@ function TelaSenha({
               </Button>
             </div>
           </div>
+        )}
+          </>
         )}
       </div>
     </div>
