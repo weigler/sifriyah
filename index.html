@@ -23,7 +23,6 @@
 <script id="app-source" type="text/plain">
 const { useState, useEffect, useMemo } = React;
 
-// ---- Camada de armazenamento local (substitui window.storage do Claude) ----
 window.storage = {
   async get(key) {
     const v = localStorage.getItem(key);
@@ -200,6 +199,15 @@ function nuvemOuvir(firebaseConfig, docId, onChange) {
   return () => {}; // desinscrever simplificado
 }
 
+// salva uma cópia PÚBLICA (sem senha, sem dados sensíveis) só com título/autor/disponibilidade
+async function nuvemSalvarPublico(firebaseConfig, docId, dadosPublicos) {
+  const db = await inicializarFirebase(firebaseConfig);
+  await db
+    .collection("sifriyah_publico")
+    .doc(docId)
+    .set({ ...dadosPublicos, atualizadoEm: Date.now() });
+}
+
 function nomeCompleto(p) {
   if (!p) return "";
   return `${p.nome || ""}${p.sobrenome ? " " + p.sobrenome : ""}`.trim();
@@ -215,6 +223,7 @@ function migrarDados(parsed) {
   const livros = (parsed.livros || []).map((l) => ({
     paginas: null,
     dataAquisicao: null,
+    capaUrl: null,
     ...l,
   }));
 
@@ -515,6 +524,25 @@ function App() {
         const criptografado = await encryptJSON({ livros, emprestimos, pessoas, cobrancas, config }, senhaAtual);
         await backendSet(criptografado);
         setTemDadosSalvos(true);
+        if (cloudConfig) {
+          const emprestimosAtivos = emprestimos.filter((e) => !e.devolvido);
+          const dadosPublicos = {
+            bibliotecaNome: APP_NAME,
+            whatsappContato: config.whatsappContato || "",
+            livros: livros.map((l) => {
+              const ativo = emprestimosAtivos.find((e) => e.livroId === l.id);
+              return {
+                id: l.id,
+                titulo: l.titulo,
+                autor: l.autor || "",
+                capaUrl: l.capaUrl || null,
+                disponivel: !ativo,
+                proximaData: ativo ? ativo.prazo : null,
+              };
+            }),
+          };
+          await nuvemSalvarPublico(cloudConfig, cloudDocId, dadosPublicos);
+        }
         setCloudStatus(cloudConfig ? "sincronizada" : "desligada");
       } catch (e) {
         console.error("Erro ao salvar:", e);
@@ -523,7 +551,7 @@ function App() {
       setSaving(false);
     }, 400);
     return () => clearTimeout(t);
-  }, [livros, emprestimos, pessoas, cobrancas, config, loaded, unlocked, senhaAtual]);
+  }, [livros, emprestimos, pessoas, cobrancas, config, loaded, unlocked, senhaAtual, cloudConfig, cloudDocId]);
 
   function livroById(id) {
     return livros.find((l) => l.id === id);
@@ -556,6 +584,7 @@ function App() {
         autor: (dados.autor || "").trim(),
         paginas: dados.paginas ? parseInt(dados.paginas, 10) : null,
         dataAquisicao: dados.dataAquisicao || null,
+        capaUrl: dados.capaUrl || null,
       },
     ]);
   }
@@ -570,6 +599,7 @@ function App() {
               autor: (dados.autor || "").trim(),
               paginas: dados.paginas ? parseInt(dados.paginas, 10) : null,
               dataAquisicao: dados.dataAquisicao || null,
+              capaUrl: dados.capaUrl || null,
             }
           : l
       )
@@ -1177,16 +1207,43 @@ function EmprestimosTab({
 }
 
 // ---------------- Acervo ----------------
+async function buscarCapaGoogleBooks(titulo, autor) {
+  const q = encodeURIComponent(`intitle:${titulo}${autor ? " inauthor:" + autor : ""}`);
+  const res = await fetch(`https://www.googleapis.com/books/v1/volumes?q=${q}&maxResults=1`);
+  const data = await res.json();
+  const link = data?.items?.[0]?.volumeInfo?.imageLinks?.thumbnail;
+  return link ? link.replace("http://", "https://") : null;
+}
+
 function AcervoTab({ livros, emprestimos, onAdd, onEdit, onRemove }) {
   const [titulo, setTitulo] = useState("");
   const [autor, setAutor] = useState("");
   const [paginas, setPaginas] = useState("");
   const [dataAquisicao, setDataAquisicao] = useState("");
+  const [capaUrl, setCapaUrl] = useState("");
+  const [buscandoCapa, setBuscandoCapa] = useState(false);
   const [editandoId, setEditandoId] = useState(null);
   const [editTitulo, setEditTitulo] = useState("");
   const [editAutor, setEditAutor] = useState("");
   const [editPaginas, setEditPaginas] = useState("");
   const [editData, setEditData] = useState("");
+  const [editCapaUrl, setEditCapaUrl] = useState("");
+  const [buscandoCapaEdit, setBuscandoCapaEdit] = useState(false);
+
+  async function buscarCapaNovo() {
+    if (!titulo.trim()) return;
+    setBuscandoCapa(true);
+    const link = await buscarCapaGoogleBooks(titulo, autor).catch(() => null);
+    if (link) setCapaUrl(link);
+    setBuscandoCapa(false);
+  }
+  async function buscarCapaEditar() {
+    if (!editTitulo.trim()) return;
+    setBuscandoCapaEdit(true);
+    const link = await buscarCapaGoogleBooks(editTitulo, editAutor).catch(() => null);
+    if (link) setEditCapaUrl(link);
+    setBuscandoCapaEdit(false);
+  }
 
   function abrirEdicao(l) {
     setEditandoId(l.id);
@@ -1194,9 +1251,16 @@ function AcervoTab({ livros, emprestimos, onAdd, onEdit, onRemove }) {
     setEditAutor(l.autor || "");
     setEditPaginas(l.paginas || "");
     setEditData(l.dataAquisicao || "");
+    setEditCapaUrl(l.capaUrl || "");
   }
   function salvarEdicao() {
-    onEdit(editandoId, { titulo: editTitulo, autor: editAutor, paginas: editPaginas, dataAquisicao: editData });
+    onEdit(editandoId, {
+      titulo: editTitulo,
+      autor: editAutor,
+      paginas: editPaginas,
+      dataAquisicao: editData,
+      capaUrl: editCapaUrl,
+    });
     setEditandoId(null);
   }
 
@@ -1232,14 +1296,29 @@ function AcervoTab({ livros, emprestimos, onAdd, onEdit, onRemove }) {
             <Input type="date" value={dataAquisicao} onChange={(e) => setDataAquisicao(e.target.value)} />
           </div>
         </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <Input
+            placeholder="Link da capa (opcional)"
+            value={capaUrl}
+            onChange={(e) => setCapaUrl(e.target.value)}
+            style={{ flex: 1 }}
+          />
+          {capaUrl && (
+            <img src={capaUrl} alt="" style={{ width: 34, height: 48, objectFit: "cover", borderRadius: 3, border: `1px solid ${COLORS.rule}` }} />
+          )}
+          <Button variant="subtle" style={{ padding: "9px 12px", fontSize: 13, whiteSpace: "nowrap" }} onClick={buscarCapaNovo} disabled={buscandoCapa}>
+            {buscandoCapa ? "buscando…" : "🔍 buscar capa"}
+          </Button>
+        </div>
         <Button
           style={{ alignSelf: "flex-start" }}
           onClick={() => {
-            onAdd({ titulo, autor, paginas, dataAquisicao });
+            onAdd({ titulo, autor, paginas, dataAquisicao, capaUrl });
             setTitulo("");
             setAutor("");
             setPaginas("");
             setDataAquisicao("");
+            setCapaUrl("");
           }}
         >
           Adicionar ao acervo
@@ -1272,6 +1351,15 @@ function AcervoTab({ livros, emprestimos, onAdd, onEdit, onRemove }) {
                     <Input type="number" value={editPaginas} onChange={(e) => setEditPaginas(e.target.value)} style={{ flex: "1 1 100px" }} placeholder="Páginas" />
                     <Input type="date" value={editData} onChange={(e) => setEditData(e.target.value)} style={{ flex: "1 1 140px" }} />
                   </div>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <Input placeholder="Link da capa" value={editCapaUrl} onChange={(e) => setEditCapaUrl(e.target.value)} style={{ flex: 1 }} />
+                    {editCapaUrl && (
+                      <img src={editCapaUrl} alt="" style={{ width: 34, height: 48, objectFit: "cover", borderRadius: 3, border: `1px solid ${COLORS.rule}` }} />
+                    )}
+                    <Button variant="subtle" style={{ padding: "7px 10px", fontSize: 12.5, whiteSpace: "nowrap" }} onClick={buscarCapaEditar} disabled={buscandoCapaEdit}>
+                      {buscandoCapaEdit ? "buscando…" : "🔍 buscar"}
+                    </Button>
+                  </div>
                   <div style={{ display: "flex", gap: 8 }}>
                     <Button style={{ padding: "7px 12px", fontSize: 13 }} onClick={salvarEdicao}>
                       Salvar
@@ -1283,6 +1371,31 @@ function AcervoTab({ livros, emprestimos, onAdd, onEdit, onRemove }) {
                 </div>
               ) : (
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  {l.capaUrl ? (
+                    <img
+                      src={l.capaUrl}
+                      alt=""
+                      style={{ width: 40, height: 56, objectFit: "cover", borderRadius: 4, border: `1px solid ${COLORS.rule}`, flexShrink: 0 }}
+                    />
+                  ) : (
+                    <div
+                      style={{
+                        width: 40,
+                        height: 56,
+                        borderRadius: 4,
+                        border: `1px solid ${COLORS.rule}`,
+                        background: COLORS.cream,
+                        flexShrink: 0,
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        fontSize: 16,
+                        opacity: 0.4,
+                      }}
+                    >
+                      📕
+                    </div>
+                  )}
                   <div style={{ flex: 1 }}>
                     <div style={{ fontFamily: "'Playfair Display', serif", fontWeight: 600, fontSize: 16 }}>{l.titulo}</div>
                     {l.autor && <div style={{ fontSize: 13, color: COLORS.inkSoft }}>{l.autor}</div>}
@@ -1597,6 +1710,7 @@ function FinanceiroTab({ emprestimos, cobrancas, pessoaById, livroById, totalPag
 function AjustesTab({ config, onChange, cloudConfig, cloudStatus, onConfigurarNuvem, onDesligarNuvem }) {
   const [pix, setPix] = useState(config.pix || "");
   const [recebedor, setRecebedor] = useState(config.recebedor || "");
+  const [whatsappContato, setWhatsappContato] = useState(config.whatsappContato || "");
   const [colado, setColado] = useState("");
   const [docId, setDocId] = useState(cloudConfig?.docId || "principal");
   const [erroNuvem, setErroNuvem] = useState("");
@@ -1638,10 +1752,38 @@ function AjustesTab({ config, onChange, cloudConfig, cloudStatus, onConfigurarNu
         <Input value={pix} onChange={(e) => setPix(e.target.value)} placeholder="ex: seuemail@email.com ou telefone" />
         <label style={labelStyle}>Nome do recebedor (opcional)</label>
         <Input value={recebedor} onChange={(e) => setRecebedor(e.target.value)} placeholder="ex: Weigler" />
-        <Button style={{ alignSelf: "flex-start" }} onClick={() => onChange({ pix, recebedor })}>
+        <label style={labelStyle}>Seu WhatsApp (usado na vitrine pública, pra reservas)</label>
+        <Input value={whatsappContato} onChange={(e) => setWhatsappContato(e.target.value)} placeholder="(11) 91234-5678" />
+        <Button style={{ alignSelf: "flex-start" }} onClick={() => onChange({ pix, recebedor, whatsappContato })}>
           Salvar
         </Button>
       </div>
+
+      {cloudConfig && (
+        <div
+          style={{
+            background: COLORS.card,
+            border: `1.5px solid ${COLORS.rule}`,
+            borderRadius: 10,
+            padding: 16,
+            marginTop: 16,
+            display: "flex",
+            flexDirection: "column",
+            gap: 8,
+          }}
+        >
+          <div style={{ fontFamily: "'Playfair Display', serif", fontWeight: 700, fontSize: 16 }}>
+            Vitrine pública
+          </div>
+          <div style={{ fontSize: 12.5, color: COLORS.inkSoft }}>
+            Página separada, sem senha, onde qualquer pessoa vê os livros disponíveis e pede reserva pelo seu WhatsApp.
+            Ela atualiza sozinha sempre que você mexe no acervo.
+          </div>
+          <div style={{ fontSize: 12.5, color: COLORS.inkSoft }}>
+            Código da biblioteca pra colar no arquivo <code>catalogo.html</code>: <b>{cloudConfig.docId}</b>
+          </div>
+        </div>
+      )}
 
       <div
         style={{
