@@ -20,8 +20,7 @@
 <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
-<script id="app-source" type="text/plain">
-const { useState, useEffect, useMemo } = React;
+<script id="app-source" type="text/plain">const { useState, useEffect, useMemo } = React;
 
 window.storage = {
   async get(key) {
@@ -82,10 +81,39 @@ function fmtMoney(v) {
   return (v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 }
 
+function fmtDataHora(ms) {
+  if (!ms) return "—";
+  const d = new Date(ms);
+  const dia = String(d.getDate()).padStart(2, "0");
+  const mes = String(d.getMonth() + 1).padStart(2, "0");
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  return `${dia}/${mes}/${d.getFullYear()} às ${hh}:${mm}`;
+}
+
 function daysBetween(iso) {
   const d1 = new Date(iso);
   const d2 = new Date(todayISO());
   return Math.floor((d2 - d1) / (1000 * 60 * 60 * 24));
+}
+
+function somarSemanas(iso, semanas) {
+  const d = new Date(iso + "T00:00:00");
+  d.setDate(d.getDate() + semanas * 7);
+  return d.toISOString().slice(0, 10);
+}
+
+// calcula o valor do empréstimo a partir do valor semanal x limite de semanas do livro,
+// já aplicando o desconto da promoção ativa (se houver e ainda estiver válida)
+function calcularValorSugerido(livro, promocao) {
+  if (!livro || !livro.valorSemanal || !livro.limiteSemanas) return null;
+  let valor = livro.valorSemanal * livro.limiteSemanas;
+  const promoValida =
+    promocao?.ativa && (!promocao.validoAte || promocao.validoAte >= todayISO());
+  if (promoValida && promocao.desconto) {
+    valor = valor * (1 - promocao.desconto / 100);
+  }
+  return Math.round(valor * 100) / 100;
 }
 
 // ---- Criptografia local (senha nunca sai do aparelho) ----
@@ -173,30 +201,44 @@ async function inicializarFirebase(firebaseConfig) {
   return _fbDb;
 }
 
-async function nuvemLer(firebaseConfig, docId) {
+// seções em que os dados são divididos — cada uma é salva e sincronizada separadamente,
+// pra dois aparelhos não sobrescreverem um o dado do outro (só "brigam" se mexerem na mesma seção)
+const SECOES = ["acervo", "pessoas", "emprestimos", "ajustes"];
+const LABEL_SECAO = { acervo: "Acervo", pessoas: "Pessoas", emprestimos: "Empréstimos", ajustes: "Ajustes" };
+const MAX_BACKUPS_AUTOMATICOS = 10;
+const BACKUP_LOCAL_KEY = "sifriyah-backups-local";
+
+async function nuvemLerDoc(firebaseConfig, docId) {
   const db = await inicializarFirebase(firebaseConfig);
   const snap = await db.collection("sifriyah").doc(docId).get();
-  if (!snap.exists) return null;
-  return snap.data().blob || null;
+  return snap.exists ? snap.data() : null;
 }
 
-async function nuvemSalvar(firebaseConfig, docId, blob) {
+// grava só a seção que mudou (merge), sem tocar nas outras — é isso que evita
+// que dois aparelhos editando partes diferentes se sobrescrevam
+async function nuvemSalvarSecao(firebaseConfig, docId, secao, blob, atualizadoEm) {
   const db = await inicializarFirebase(firebaseConfig);
   await db
     .collection("sifriyah")
     .doc(docId)
-    .set({ blob, atualizadoEm: Date.now() });
+    .set({ [secao]: { blob, atualizadoEm } }, { merge: true });
 }
 
-function nuvemOuvir(firebaseConfig, docId, onChange) {
+// escuta o documento inteiro, mas repassa cada seção separadamente pra quem está ouvindo decidir
+// se aquilo já foi aplicado (evita reprocessar o eco do próprio salvamento)
+function nuvemOuvir(firebaseConfig, docId, onMudancaSecao) {
   inicializarFirebase(firebaseConfig).then((db) => {
     db.collection("sifriyah")
       .doc(docId)
       .onSnapshot((snap) => {
-        if (snap.exists) onChange(snap.data().blob || null);
+        if (!snap.exists) return;
+        const dados = snap.data();
+        SECOES.forEach((secao) => {
+          if (dados[secao]) onMudancaSecao(secao, dados[secao]);
+        });
       });
   });
-  return () => {}; // desinscrever simplificado
+  return () => {};
 }
 
 // salva uma cópia PÚBLICA (sem senha, sem dados sensíveis) só com título/autor/disponibilidade
@@ -226,6 +268,37 @@ async function nuvemRemoverPreCadastro(firebaseConfig, id) {
   await db.collection("sifriyah_precadastros").doc(id).delete();
 }
 
+// ---- Backups (cópias completas com data/hora, separadas do salvamento "ao vivo") ----
+async function nuvemSalvarBackup(firebaseConfig, docId, tipo, secoesBlobs, criadoEm) {
+  const db = await inicializarFirebase(firebaseConfig);
+  await db.collection("sifriyah_backups").add({ biblioteca: docId, tipo, criadoEm, secoes: secoesBlobs });
+}
+async function nuvemListarBackups(firebaseConfig, docId) {
+  const db = await inicializarFirebase(firebaseConfig);
+  const snap = await db.collection("sifriyah_backups").where("biblioteca", "==", docId).get();
+  const lista = [];
+  snap.forEach((doc) => lista.push({ id: doc.id, ...doc.data() }));
+  lista.sort((a, b) => (b.criadoEm || 0) - (a.criadoEm || 0));
+  return lista;
+}
+async function nuvemApagarBackup(firebaseConfig, id) {
+  const db = await inicializarFirebase(firebaseConfig);
+  await db.collection("sifriyah_backups").doc(id).delete();
+}
+
+async function localListarBackups() {
+  const res = await window.storage.get(BACKUP_LOCAL_KEY, false).catch(() => null);
+  if (!res || !res.value) return [];
+  try {
+    return JSON.parse(res.value);
+  } catch (e) {
+    return [];
+  }
+}
+async function localSalvarListaBackups(lista) {
+  await window.storage.set(BACKUP_LOCAL_KEY, JSON.stringify(lista), false);
+}
+
 function nomeCompleto(p) {
   if (!p) return "";
   return `${p.nome || ""}${p.sobrenome ? " " + p.sobrenome : ""}`.trim();
@@ -246,8 +319,10 @@ function migrarDados(parsed) {
     limiteSemanas: null,
     categoria: "",
     tags: [],
+    quantidade: 1,
     ...l,
     tags: l.tags || [],
+    quantidade: l.quantidade || 1,
   }));
 
   let pessoas = parsed.pessoas;
@@ -285,9 +360,32 @@ function migrarDados(parsed) {
       recebedor: "",
       whatsappContato: "",
       linkVitrine: "",
-      promocao: { ativa: false, descricao: "", validoAte: "" },
+      promocao: { ativa: false, descricao: "", validoAte: "", desconto: 0 },
       ...(parsed.config || {}),
     },
+  };
+}
+
+// separa os dados completos nas 4 seções (usado ao salvar/fazer backup)
+function montarSecoes({ livros, categorias, tags, pessoas, emprestimos, cobrancas, config }) {
+  return {
+    acervo: { livros, categorias, tags },
+    pessoas: { pessoas },
+    emprestimos: { emprestimos, cobrancas },
+    ajustes: { config },
+  };
+}
+
+// junta as seções decodificadas de volta num único objeto (pra passar por migrarDados)
+function combinarSecoes(decodificadoPorSecao) {
+  return {
+    livros: decodificadoPorSecao.acervo?.livros,
+    categorias: decodificadoPorSecao.acervo?.categorias,
+    tags: decodificadoPorSecao.acervo?.tags,
+    pessoas: decodificadoPorSecao.pessoas?.pessoas,
+    emprestimos: decodificadoPorSecao.emprestimos?.emprestimos,
+    cobrancas: decodificadoPorSecao.emprestimos?.cobrancas,
+    config: decodificadoPorSecao.ajustes?.config,
   };
 }
 
@@ -486,7 +584,7 @@ function App() {
     recebedor: "",
     whatsappContato: "",
     linkVitrine: "",
-    promocao: { ativa: false, descricao: "", validoAte: "" },
+    promocao: { ativa: false, descricao: "", validoAte: "", desconto: 0 },
   });
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -495,20 +593,35 @@ function App() {
   const [cloudConfig, setCloudConfigState] = useState(() => lerConfigNuvem());
   const [cloudDocId, setCloudDocId] = useState(() => lerConfigNuvem()?.docId || "principal");
   const [cloudStatus, setCloudStatus] = useState("desligada"); // desligada | conectando | sincronizada | erro
-  const ultimoBlobRef = React.useRef(null);
+  // guarda, por seção, o "atualizadoEm" que este aparelho já aplicou — serve pra:
+  // 1) ignorar o eco do próprio salvamento quando o ouvinte em tempo real dispara
+  // 2) aplicar só o que realmente é novidade vinda de outro aparelho
+  const ultimosTimestampsRef = React.useRef({});
 
-  async function backendGet() {
-    if (cloudConfig) return await nuvemLer(cloudConfig, cloudDocId);
-    const res = await window.storage.get(STORAGE_KEY, false);
-    return res ? res.value : null;
-  }
-  async function backendSet(blob) {
-    ultimoBlobRef.current = blob;
+  // busca as seções salvas (nuvem ou local) sem descriptografar — usado só pra saber se existe algo
+  async function carregarSecoesBrutas() {
     if (cloudConfig) {
-      await nuvemSalvar(cloudConfig, cloudDocId, blob);
-    } else {
-      await window.storage.set(STORAGE_KEY, blob, false);
+      const doc = await nuvemLerDoc(cloudConfig, cloudDocId);
+      if (!doc) return { secoes: {}, legado: null };
+      const secoes = {};
+      SECOES.forEach((s) => {
+        if (doc[s] && doc[s].blob) secoes[s] = doc[s];
+      });
+      return { secoes, legado: doc.blob || null };
     }
+    const secoes = {};
+    for (const s of SECOES) {
+      const res = await window.storage.get(`${STORAGE_KEY}__${s}`, false).catch(() => null);
+      if (res && res.value) {
+        try {
+          const parsed = JSON.parse(res.value);
+          if (parsed && parsed.blob) secoes[s] = parsed;
+        } catch (e) {}
+      }
+    }
+    const legadoRes = await window.storage.get(STORAGE_KEY, false).catch(() => null);
+    const legado = legadoRes && legadoRes.value ? legadoRes.value : null;
+    return { secoes, legado };
   }
 
   function configurarNuvem(firebaseConfig, docId) {
@@ -527,12 +640,19 @@ function App() {
   const [temDadosSalvos, setTemDadosSalvos] = useState(false);
   const [senhaAtual, setSenhaAtual] = useState(""); // fica só na memória, nunca é salva
 
+  // ---- Histórico de salvamento e backups ----
+  const [ultimoSalvamento, setUltimoSalvamento] = useState({}); // { acervo: ms, pessoas: ms, emprestimos: ms, ajustes: ms }
+  const [ultimoBackup, setUltimoBackup] = useState(null);
+  const [backups, setBackups] = useState([]);
+  const [carregandoBackups, setCarregandoBackups] = useState(false);
+  const [fazendoBackup, setFazendoBackup] = useState(false);
+
   useEffect(() => {
     (async () => {
       setCloudStatus(cloudConfig ? "conectando" : "desligada");
       try {
-        const blob = await backendGet();
-        setTemDadosSalvos(!!blob);
+        const { secoes, legado } = await carregarSecoesBrutas();
+        setTemDadosSalvos(Object.keys(secoes).length > 0 || !!legado);
         setCloudStatus(cloudConfig ? "sincronizada" : "desligada");
       } catch (e) {
         setTemDadosSalvos(false);
@@ -542,26 +662,32 @@ function App() {
     })();
   }, [cloudConfig, cloudDocId]);
 
-  // recebe atualizações vindas de outros aparelhos em tempo real
+  // recebe atualizações vindas de outros aparelhos em tempo real, seção por seção
   useEffect(() => {
     if (!cloudConfig || !unlocked || !senhaAtual) return;
-    nuvemOuvir(cloudConfig, cloudDocId, async (blob) => {
-      if (!blob || blob === ultimoBlobRef.current) return; // veio da própria gravação, ignora
+    const parar = nuvemOuvir(cloudConfig, cloudDocId, async (secao, dado) => {
+      if (!dado || !dado.blob || dado.atualizadoEm === ultimosTimestampsRef.current[secao]) return;
       try {
-        const parsed = await decryptJSON(blob, senhaAtual);
-        const m = migrarDados(parsed);
-        ultimoBlobRef.current = blob;
-        setLivros(m.livros);
-        setEmprestimos(m.emprestimos);
-        setPessoas(m.pessoas);
-        setCobrancas(m.cobrancas);
-        setCategorias(m.categorias);
-        setTags(m.tags);
-        setConfig(m.config);
+        const obj = await decryptJSON(dado.blob, senhaAtual);
+        ultimosTimestampsRef.current[secao] = dado.atualizadoEm;
+        setUltimoSalvamento((prev) => ({ ...prev, [secao]: dado.atualizadoEm }));
+        if (secao === "acervo") {
+          setLivros(obj.livros || []);
+          setCategorias(obj.categorias || []);
+          setTags(obj.tags || []);
+        } else if (secao === "pessoas") {
+          setPessoas(obj.pessoas || []);
+        } else if (secao === "emprestimos") {
+          setEmprestimos(obj.emprestimos || []);
+          setCobrancas(obj.cobrancas || []);
+        } else if (secao === "ajustes") {
+          setConfig(obj.config || {});
+        }
       } catch (e) {
         // outro aparelho pode ter mandado com senha diferente; ignora silenciosamente
       }
     });
+    return parar;
   }, [cloudConfig, cloudDocId, unlocked, senhaAtual]);
 
   // ---- Pré-cadastros enviados pela vitrine pública ----
@@ -580,16 +706,33 @@ function App() {
   }
 
   async function desbloquear(senha) {
-    const blob = await backendGet();
-    if (!blob) {
+    const { secoes, legado } = await carregarSecoesBrutas();
+    const temSecoesNovas = Object.keys(secoes).length > 0;
+    if (!temSecoesNovas && !legado) {
       setSenhaAtual(senha);
       setUnlocked(true);
       return { ok: true };
     }
     try {
-      const parsed = await decryptJSON(blob, senha);
-      const m = migrarDados(parsed);
-      ultimoBlobRef.current = blob;
+      let m;
+      if (temSecoesNovas) {
+        // formato novo (já separado por seção)
+        const decodificado = {};
+        const timestamps = {};
+        for (const s of SECOES) {
+          if (secoes[s]) {
+            decodificado[s] = await decryptJSON(secoes[s].blob, senha);
+            timestamps[s] = secoes[s].atualizadoEm;
+            ultimosTimestampsRef.current[s] = secoes[s].atualizadoEm;
+          }
+        }
+        m = migrarDados(combinarSecoes(decodificado));
+        setUltimoSalvamento((prev) => ({ ...prev, ...timestamps }));
+      } else {
+        // formato antigo (um blob só) — migra pro formato novo automaticamente
+        const parsed = await decryptJSON(legado, senha);
+        m = migrarDados(parsed);
+      }
       setLivros(m.livros);
       setEmprestimos(m.emprestimos);
       setPessoas(m.pessoas);
@@ -611,59 +754,295 @@ function App() {
   }
 
   async function apagarTudoEComecarDeNovo() {
-    await backendSet("");
+    const agora = Date.now();
+    for (const s of SECOES) {
+      ultimosTimestampsRef.current[s] = agora;
+      if (cloudConfig) {
+        await nuvemSalvarSecao(cloudConfig, cloudDocId, s, "", agora);
+      } else {
+        await window.storage.set(`${STORAGE_KEY}__${s}`, JSON.stringify({ blob: "", atualizadoEm: agora }), false);
+      }
+    }
+    if (cloudConfig) {
+      const db = await inicializarFirebase(cloudConfig);
+      await db.collection("sifriyah").doc(cloudDocId).set({ blob: "" }, { merge: true }); // limpa o formato antigo também
+    } else {
+      await window.storage.set(STORAGE_KEY, "", false); // limpa o formato antigo também
+    }
     setLivros([]);
     setEmprestimos([]);
     setPessoas([]);
     setCobrancas([]);
     setCategorias([]);
     setTags([]);
-    setConfig({ pix: "", recebedor: "", whatsappContato: "", linkVitrine: "", promocao: { ativa: false, descricao: "", validoAte: "" } });
+    setConfig({ pix: "", recebedor: "", whatsappContato: "", linkVitrine: "", promocao: { ativa: false, descricao: "", validoAte: "", desconto: 0 } });
     setSenhaAtual("");
     setUnlocked(false);
     setTemDadosSalvos(false);
+    // os backups já feitos NÃO são apagados — servem de rede de segurança caso o reset tenha sido engano
+  }
+
+  // grava uma seção (local ou nuvem), atualizando o registro de "última vez salva"
+  async function salvarSecao(secao, dadosSecao) {
+    const blob = await encryptJSON(dadosSecao, senhaAtual);
+    const agora = Date.now();
+    ultimosTimestampsRef.current[secao] = agora;
+    if (cloudConfig) {
+      await nuvemSalvarSecao(cloudConfig, cloudDocId, secao, blob, agora);
+    } else {
+      await window.storage.set(`${STORAGE_KEY}__${secao}`, JSON.stringify({ blob, atualizadoEm: agora }), false);
+    }
+    setUltimoSalvamento((prev) => ({ ...prev, [secao]: agora }));
+    return agora;
+  }
+
+  // salvamento automático — uma seção só é regravada quando os dados dela mudam,
+  // então editar Pessoas não toca em Acervo/Empréstimos/Ajustes (e vice-versa)
+  const salvandoContagemRef = React.useRef(0);
+  function iniciarSalvando() {
+    salvandoContagemRef.current += 1;
+    setSaving(true);
+  }
+  function terminarSalvando() {
+    salvandoContagemRef.current = Math.max(0, salvandoContagemRef.current - 1);
+    if (salvandoContagemRef.current === 0) setSaving(false);
   }
 
   useEffect(() => {
     if (!loaded || !unlocked || !senhaAtual) return;
-    setSaving(true);
+    iniciarSalvando();
+    let concluido = false;
     const t = setTimeout(async () => {
       try {
-        const criptografado = await encryptJSON({ livros, emprestimos, pessoas, cobrancas, categorias, tags, config }, senhaAtual);
-        await backendSet(criptografado);
+        await salvarSecao("acervo", { livros, categorias, tags });
         setTemDadosSalvos(true);
-        if (cloudConfig) {
-          const emprestimosAtivos = emprestimos.filter((e) => !e.devolvido);
-          const dadosPublicos = {
-            bibliotecaNome: APP_NAME,
-            whatsappContato: config.whatsappContato || "",
-            promocao: config.promocao?.ativa ? config.promocao : null,
-            livros: livros.map((l) => {
-              const ativo = emprestimosAtivos.find((e) => e.livroId === l.id);
-              return {
-                id: l.id,
-                titulo: l.titulo,
-                autor: l.autor || "",
-                capaUrl: l.capaUrl || null,
-                paginas: l.paginas || null,
-                categoria: l.categoria || "",
-                tags: l.tags || [],
-                disponivel: !ativo,
-                proximaData: ativo ? ativo.prazo : null,
-              };
-            }),
-          };
-          await nuvemSalvarPublico(cloudConfig, cloudDocId, dadosPublicos);
-        }
         setCloudStatus(cloudConfig ? "sincronizada" : "desligada");
       } catch (e) {
-        console.error("Erro ao salvar:", e);
+        console.error("Erro ao salvar acervo:", e);
         setCloudStatus(cloudConfig ? "erro" : "desligada");
       }
-      setSaving(false);
+      concluido = true;
+      terminarSalvando();
+    }, 400);
+    return () => {
+      clearTimeout(t);
+      if (!concluido) terminarSalvando();
+    };
+  }, [livros, categorias, tags, loaded, unlocked, senhaAtual, cloudConfig, cloudDocId]);
+
+  useEffect(() => {
+    if (!loaded || !unlocked || !senhaAtual) return;
+    iniciarSalvando();
+    let concluido = false;
+    const t = setTimeout(async () => {
+      try {
+        await salvarSecao("pessoas", { pessoas });
+        setTemDadosSalvos(true);
+        setCloudStatus(cloudConfig ? "sincronizada" : "desligada");
+      } catch (e) {
+        console.error("Erro ao salvar pessoas:", e);
+        setCloudStatus(cloudConfig ? "erro" : "desligada");
+      }
+      concluido = true;
+      terminarSalvando();
+    }, 400);
+    return () => {
+      clearTimeout(t);
+      if (!concluido) terminarSalvando();
+    };
+  }, [pessoas, loaded, unlocked, senhaAtual, cloudConfig, cloudDocId]);
+
+  useEffect(() => {
+    if (!loaded || !unlocked || !senhaAtual) return;
+    iniciarSalvando();
+    let concluido = false;
+    const t = setTimeout(async () => {
+      try {
+        await salvarSecao("emprestimos", { emprestimos, cobrancas });
+        setTemDadosSalvos(true);
+        setCloudStatus(cloudConfig ? "sincronizada" : "desligada");
+      } catch (e) {
+        console.error("Erro ao salvar empréstimos:", e);
+        setCloudStatus(cloudConfig ? "erro" : "desligada");
+      }
+      concluido = true;
+      terminarSalvando();
+    }, 400);
+    return () => {
+      clearTimeout(t);
+      if (!concluido) terminarSalvando();
+    };
+  }, [emprestimos, cobrancas, loaded, unlocked, senhaAtual, cloudConfig, cloudDocId]);
+
+  useEffect(() => {
+    if (!loaded || !unlocked || !senhaAtual) return;
+    iniciarSalvando();
+    let concluido = false;
+    const t = setTimeout(async () => {
+      try {
+        await salvarSecao("ajustes", { config });
+        setTemDadosSalvos(true);
+        setCloudStatus(cloudConfig ? "sincronizada" : "desligada");
+      } catch (e) {
+        console.error("Erro ao salvar ajustes:", e);
+        setCloudStatus(cloudConfig ? "erro" : "desligada");
+      }
+      concluido = true;
+      terminarSalvando();
+    }, 400);
+    return () => {
+      clearTimeout(t);
+      if (!concluido) terminarSalvando();
+    };
+  }, [config, loaded, unlocked, senhaAtual, cloudConfig, cloudDocId]);
+
+  // atualiza a vitrine pública (não depende do salvamento por seção)
+  useEffect(() => {
+    if (!loaded || !unlocked || !senhaAtual || !cloudConfig) return;
+    const t = setTimeout(async () => {
+      try {
+        const emprestimosAtivos = emprestimos.filter((e) => !e.devolvido);
+        const dadosPublicos = {
+          bibliotecaNome: APP_NAME,
+          whatsappContato: config.whatsappContato || "",
+          promocao: config.promocao?.ativa ? config.promocao : null,
+          livros: livros.map((l) => {
+            const ativos = emprestimosAtivos.filter((e) => e.livroId === l.id);
+            const quantidade = l.quantidade || 1;
+            const disponivel = ativos.length < quantidade;
+            const proximaData = disponivel
+              ? null
+              : ativos.reduce((menor, e) => (!menor || (e.prazo && e.prazo < menor) ? e.prazo : menor), null);
+            return {
+              id: l.id,
+              titulo: l.titulo,
+              autor: l.autor || "",
+              capaUrl: l.capaUrl || null,
+              paginas: l.paginas || null,
+              categoria: l.categoria || "",
+              tags: l.tags || [],
+              disponivel,
+              proximaData,
+            };
+          }),
+        };
+        await nuvemSalvarPublico(cloudConfig, cloudDocId, dadosPublicos);
+      } catch (e) {
+        console.error("Erro ao salvar vitrine pública:", e);
+      }
     }, 400);
     return () => clearTimeout(t);
-  }, [livros, emprestimos, pessoas, cobrancas, categorias, tags, config, loaded, unlocked, senhaAtual, cloudConfig, cloudDocId]);
+  }, [livros, emprestimos, config, loaded, unlocked, senhaAtual, cloudConfig, cloudDocId]);
+
+  // ---- Backups ----
+  async function listarBackups() {
+    if (cloudConfig) return await nuvemListarBackups(cloudConfig, cloudDocId);
+    return await localListarBackups();
+  }
+
+  async function atualizarListaBackups() {
+    setCarregandoBackups(true);
+    try {
+      const lista = await listarBackups();
+      setBackups(lista);
+      if (lista[0]) setUltimoBackup(lista[0].criadoEm);
+    } catch (e) {
+      console.error("Erro ao listar backups:", e);
+    }
+    setCarregandoBackups(false);
+  }
+
+  async function fazerBackup(tipo) {
+    const secoesAtuais = montarSecoes({ livros, categorias, tags, pessoas, emprestimos, cobrancas, config });
+    const blobsPorSecao = {};
+    for (const s of SECOES) {
+      blobsPorSecao[s] = await encryptJSON(secoesAtuais[s], senhaAtual);
+    }
+    const criadoEm = Date.now();
+    if (cloudConfig) {
+      await nuvemSalvarBackup(cloudConfig, cloudDocId, tipo, blobsPorSecao, criadoEm);
+      if (tipo === "automatico") {
+        const lista = await nuvemListarBackups(cloudConfig, cloudDocId);
+        const automaticos = lista.filter((b) => b.tipo === "automatico");
+        if (automaticos.length > MAX_BACKUPS_AUTOMATICOS) {
+          for (const b of automaticos.slice(MAX_BACKUPS_AUTOMATICOS)) {
+            await nuvemApagarBackup(cloudConfig, b.id).catch(() => {});
+          }
+        }
+      }
+    } else {
+      const lista = await localListarBackups();
+      const novoItem = { id: uid(), tipo, criadoEm, secoes: blobsPorSecao };
+      const manuais = lista.filter((b) => b.tipo === "manual");
+      const automaticos = lista.filter((b) => b.tipo === "automatico");
+      const listaAtualizada =
+        tipo === "manual"
+          ? [novoItem, ...manuais, ...automaticos.slice(0, MAX_BACKUPS_AUTOMATICOS)]
+          : [...manuais, novoItem, ...automaticos].slice(0, manuais.length + MAX_BACKUPS_AUTOMATICOS);
+      listaAtualizada.sort((a, b) => b.criadoEm - a.criadoEm);
+      await localSalvarListaBackups(listaAtualizada);
+    }
+    setUltimoBackup(criadoEm);
+    await atualizarListaBackups();
+    return criadoEm;
+  }
+
+  async function handleFazerBackupManual() {
+    setFazendoBackup(true);
+    try {
+      await fazerBackup("manual");
+    } catch (e) {
+      console.error("Erro ao fazer backup:", e);
+    }
+    setFazendoBackup(false);
+  }
+
+  async function restaurarBackup(backup) {
+    const decodificado = {};
+    for (const s of SECOES) {
+      if (backup.secoes[s]) {
+        decodificado[s] = await decryptJSON(backup.secoes[s], senhaAtual);
+      }
+    }
+    const m = migrarDados(combinarSecoes(decodificado));
+    setLivros(m.livros);
+    setEmprestimos(m.emprestimos);
+    setPessoas(m.pessoas);
+    setCobrancas(m.cobrancas);
+    setCategorias(m.categorias);
+    setTags(m.tags);
+    setConfig(m.config);
+    // os useEffect de salvamento por seção cuidam de gravar esses dados restaurados automaticamente
+  }
+
+  async function apagarBackup(backup) {
+    if (cloudConfig) {
+      await nuvemApagarBackup(cloudConfig, backup.id);
+    } else {
+      const lista = await localListarBackups();
+      await localSalvarListaBackups(lista.filter((b) => b.id !== backup.id));
+    }
+    await atualizarListaBackups();
+  }
+
+  // confere uma vez por desbloqueio se já passou mais de 24h desde o último backup;
+  // se sim (ou se nunca houve nenhum), faz um backup automático
+  useEffect(() => {
+    if (!loaded || !unlocked || !senhaAtual) return;
+    (async () => {
+      try {
+        const lista = await listarBackups();
+        setBackups(lista);
+        const maisRecente = lista[0];
+        if (maisRecente) setUltimoBackup(maisRecente.criadoEm);
+        const precisaBackup = !maisRecente || Date.now() - maisRecente.criadoEm > 24 * 60 * 60 * 1000;
+        if (precisaBackup) await fazerBackup("automatico");
+      } catch (e) {
+        console.error("Erro ao checar backup automático:", e);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [unlocked, senhaAtual, loaded]);
 
   function livroById(id) {
     return livros.find((l) => l.id === id);
@@ -701,6 +1080,7 @@ function App() {
         limiteSemanas: dados.limiteSemanas ? parseInt(dados.limiteSemanas, 10) : null,
         categoria: (dados.categoria || "").trim(),
         tags: dados.tags || [],
+        quantidade: dados.quantidade ? Math.max(1, parseInt(dados.quantidade, 10)) : 1,
       },
     ]);
   }
@@ -720,6 +1100,7 @@ function App() {
               limiteSemanas: dados.limiteSemanas ? parseInt(dados.limiteSemanas, 10) : null,
               categoria: (dados.categoria || "").trim(),
               tags: dados.tags || [],
+              quantidade: dados.quantidade ? Math.max(1, parseInt(dados.quantidade, 10)) : 1,
             }
           : l
       )
@@ -748,6 +1129,7 @@ function App() {
 
   // ---- Ações: Empréstimos ----
   function addEmprestimo(data) {
+    if (!data.livroId || !data.prazo) return;
     let pessoaId = data.pessoaId;
     if (!pessoaId && data.pessoaNovaNome) {
       pessoaId = uid();
@@ -1046,6 +1428,15 @@ function App() {
             cloudStatus={cloudStatus}
             onConfigurarNuvem={configurarNuvem}
             onDesligarNuvem={desligarNuvem}
+            ultimoSalvamento={ultimoSalvamento}
+            ultimoBackup={ultimoBackup}
+            backups={backups}
+            carregandoBackups={carregandoBackups}
+            fazendoBackup={fazendoBackup}
+            onFazerBackup={handleFazerBackupManual}
+            onAtualizarBackups={atualizarListaBackups}
+            onRestaurarBackup={restaurarBackup}
+            onApagarBackup={apagarBackup}
           />
         )}
       </div>
@@ -1082,15 +1473,53 @@ function EmprestimosTab({
   const [pagamentoInputs, setPagamentoInputs] = useState({});
   const [erroForm, setErroForm] = useState("");
 
+  function unidadesEmprestadas(livroId) {
+    return emprestimos.filter((e) => e.livroId === livroId && !e.devolvido).length;
+  }
+
   const livrosDisponiveis = livros.filter(
-    (l) => !emprestimos.some((e) => e.livroId === l.id && !e.devolvido)
+    (l) => unidadesEmprestadas(l.id) < (l.quantidade || 1)
   );
+
+  // pessoas que já estão com algum livro emprestado agora (regra: 1 livro por pessoa por vez)
+  const pessoasComEmprestimoAtivo = new Set(
+    emprestimos.filter((e) => !e.devolvido).map((e) => e.pessoaId)
+  );
+
+  // auto-preenchimento: ao escolher o livro, sugere valor combinado (valor semanal x limite de
+  // semanas, já com desconto da promoção ativa) e a data de devolução (hoje + limite de semanas)
+  useEffect(() => {
+    if (!livroId) return;
+    const l = livroById(livroId);
+    if (!l) return;
+    const sugerido = calcularValorSugerido(l, config.promocao);
+    if (sugerido !== null) setValorCombinado(String(sugerido));
+    if (l.limiteSemanas) setPrazo(somarSemanas(todayISO(), l.limiteSemanas));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [livroId]);
 
   function submit() {
     if (!livroId || (!pessoaId && !nomeNovo.trim())) {
       setErroForm("Escolha um livro e quem está pegando.");
       return;
     }
+    if (!prazo) {
+      setErroForm("A data de devolução é obrigatória.");
+      return;
+    }
+
+    // regra: 1 livro por pessoa por vez
+    let pessoaExistente = pessoaId ? pessoaById(pessoaId) : null;
+    if (!pessoaId && nomeNovo.trim()) {
+      pessoaExistente = pessoas.find(
+        (p) => nomeCompleto(p).toLowerCase() === `${nomeNovo} ${sobrenomeNovo}`.trim().toLowerCase()
+      );
+    }
+    if (pessoaExistente && pessoasComEmprestimoAtivo.has(pessoaExistente.id)) {
+      setErroForm(`${nomeCompleto(pessoaExistente)} já está com um livro emprestado. Só é permitido um por vez.`);
+      return;
+    }
+
     setErroForm("");
     onAdd({
       livroId,
@@ -1237,11 +1666,15 @@ function EmprestimosTab({
             <label style={labelStyle}>Livro</label>
             <select value={livroId} onChange={(e) => setLivroId(e.target.value)} style={inputBase}>
               <option value="">Selecione…</option>
-              {livrosDisponiveis.map((l) => (
-                <option key={l.id} value={l.id}>
-                  {l.titulo} {l.autor ? `— ${l.autor}` : ""}
-                </option>
-              ))}
+              {livrosDisponiveis.map((l) => {
+                const qtd = l.quantidade || 1;
+                const livres = qtd - unidadesEmprestadas(l.id);
+                return (
+                  <option key={l.id} value={l.id}>
+                    {l.titulo} {l.autor ? `— ${l.autor}` : ""} {qtd > 1 ? `(${livres} de ${qtd} disponíveis)` : ""}
+                  </option>
+                );
+              })}
             </select>
             {livrosDisponiveis.length === 0 && (
               <div style={{ fontSize: 12, color: COLORS.rust }}>
@@ -1268,8 +1701,8 @@ function EmprestimosTab({
             >
               <option value="">+ Pessoa nova…</option>
               {pessoas.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {nomeCompleto(p)}
+                <option key={p.id} value={p.id} disabled={pessoasComEmprestimoAtivo.has(p.id)}>
+                  {nomeCompleto(p)} {pessoasComEmprestimoAtivo.has(p.id) ? "— já com livro emprestado" : ""}
                 </option>
               ))}
             </select>
@@ -1289,18 +1722,19 @@ function EmprestimosTab({
 
             <div style={{ display: "flex", gap: 10 }}>
               <div style={{ flex: 1 }}>
-                <label style={labelStyle}>Valor combinado (R$)</label>
+                <label style={labelStyle}>Valor combinado (R$) — pode ser 0</label>
                 <Input
                   type="number"
                   step="0.01"
+                  min="0"
                   value={valorCombinado}
                   onChange={(e) => setValorCombinado(e.target.value)}
                   placeholder="0,00"
                 />
               </div>
               <div style={{ flex: 1 }}>
-                <label style={labelStyle}>Prazo de devolução</label>
-                <Input type="date" value={prazo} onChange={(e) => setPrazo(e.target.value)} />
+                <label style={labelStyle}>Prazo de devolução *</label>
+                <Input type="date" value={prazo} onChange={(e) => setPrazo(e.target.value)} required />
               </div>
             </div>
 
@@ -1502,6 +1936,7 @@ function AcervoTab({ livros, emprestimos, categorias, tags, onAdd, onEdit, onRem
   const [capaUrl, setCapaUrl] = useState("");
   const [valorSemanal, setValorSemanal] = useState("");
   const [limiteSemanas, setLimiteSemanas] = useState("");
+  const [quantidade, setQuantidade] = useState("1");
   const [categoria, setCategoria] = useState("");
   const [tagsSelecionadas, setTagsSelecionadas] = useState([]);
   const [buscandoCapa, setBuscandoCapa] = useState(false);
@@ -1513,6 +1948,7 @@ function AcervoTab({ livros, emprestimos, categorias, tags, onAdd, onEdit, onRem
   const [editCapaUrl, setEditCapaUrl] = useState("");
   const [editValorSemanal, setEditValorSemanal] = useState("");
   const [editLimiteSemanas, setEditLimiteSemanas] = useState("");
+  const [editQuantidade, setEditQuantidade] = useState("1");
   const [editCategoria, setEditCategoria] = useState("");
   const [editTagsSelecionadas, setEditTagsSelecionadas] = useState([]);
   const [buscandoCapaEdit, setBuscandoCapaEdit] = useState(false);
@@ -1545,6 +1981,7 @@ function AcervoTab({ livros, emprestimos, categorias, tags, onAdd, onEdit, onRem
     setEditCapaUrl(l.capaUrl || "");
     setEditValorSemanal(l.valorSemanal || "");
     setEditLimiteSemanas(l.limiteSemanas || "");
+    setEditQuantidade(String(l.quantidade || 1));
     setEditCategoria(l.categoria || "");
     setEditTagsSelecionadas(l.tags || []);
   }
@@ -1557,6 +1994,7 @@ function AcervoTab({ livros, emprestimos, categorias, tags, onAdd, onEdit, onRem
       capaUrl: editCapaUrl,
       valorSemanal: editValorSemanal,
       limiteSemanas: editLimiteSemanas,
+      quantidade: editQuantidade,
       categoria: editCategoria,
       tags: editTagsSelecionadas,
     });
@@ -1646,6 +2084,18 @@ function AcervoTab({ livros, emprestimos, categorias, tags, onAdd, onEdit, onRem
             style={{ flex: "1 1 140px" }}
           />
         </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <div style={{ flex: "1 1 140px" }}>
+            <label style={{ ...labelStyle, marginBottom: 2, display: "block" }}>Quantas unidades temos</label>
+            <Input
+              type="number"
+              min="1"
+              placeholder="1"
+              value={quantidade}
+              onChange={(e) => setQuantidade(e.target.value)}
+            />
+          </div>
+        </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <Input
             placeholder="Link da capa (opcional)"
@@ -1663,7 +2113,7 @@ function AcervoTab({ livros, emprestimos, categorias, tags, onAdd, onEdit, onRem
         <Button
           style={{ alignSelf: "flex-start" }}
           onClick={() => {
-            onAdd({ titulo, autor, paginas, dataAquisicao, capaUrl, valorSemanal, limiteSemanas, categoria, tags: tagsSelecionadas });
+            onAdd({ titulo, autor, paginas, dataAquisicao, capaUrl, valorSemanal, limiteSemanas, quantidade, categoria, tags: tagsSelecionadas });
             setTitulo("");
             setAutor("");
             setPaginas("");
@@ -1671,6 +2121,7 @@ function AcervoTab({ livros, emprestimos, categorias, tags, onAdd, onEdit, onRem
             setCapaUrl("");
             setValorSemanal("");
             setLimiteSemanas("");
+            setQuantidade("1");
             setCategoria("");
             setTagsSelecionadas([]);
           }}
@@ -1683,7 +2134,9 @@ function AcervoTab({ livros, emprestimos, categorias, tags, onAdd, onEdit, onRem
 
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {livros.map((l) => {
-          const emprestado = emprestimos.some((e) => e.livroId === l.id && !e.devolvido);
+          const quantidade = l.quantidade || 1;
+          const unidadesFora = emprestimos.filter((e) => e.livroId === l.id && !e.devolvido).length;
+          const emprestado = unidadesFora >= quantidade;
           const editando = editandoId === l.id;
           return (
             <div
@@ -1714,6 +2167,7 @@ function AcervoTab({ livros, emprestimos, categorias, tags, onAdd, onEdit, onRem
                     </select>
                     <Input type="number" step="0.01" placeholder="Valor semanal (R$)" value={editValorSemanal} onChange={(e) => setEditValorSemanal(e.target.value)} style={{ flex: "1 1 140px" }} />
                     <Input type="number" placeholder="Limite semanas" value={editLimiteSemanas} onChange={(e) => setEditLimiteSemanas(e.target.value)} style={{ flex: "1 1 120px" }} />
+                    <Input type="number" min="1" placeholder="Unidades" value={editQuantidade} onChange={(e) => setEditQuantidade(e.target.value)} style={{ flex: "1 1 100px" }} />
                   </div>
                   {tags.length > 0 && (
                     <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
@@ -1798,6 +2252,7 @@ function AcervoTab({ livros, emprestimos, categorias, tags, onAdd, onEdit, onRem
                       {l.categoria && l.valorSemanal ? " · " : ""}
                       {l.valorSemanal ? `${fmtMoney(l.valorSemanal)}/semana` : ""}
                       {l.limiteSemanas ? ` · limite ${l.limiteSemanas} sem.` : ""}
+                      {quantidade > 1 ? ` · ${quantidade} unidades` : ""}
                     </div>
                     {l.tags && l.tags.length > 0 && (
                       <div style={{ fontSize: 11, color: COLORS.inkSoft, marginTop: 2 }}>
@@ -1817,7 +2272,11 @@ function AcervoTab({ livros, emprestimos, categorias, tags, onAdd, onEdit, onRem
                       whiteSpace: "nowrap",
                     }}
                   >
-                    {emprestado ? "FORA" : "NA PRATELEIRA"}
+                    {emprestado
+                      ? "FORA"
+                      : quantidade > 1
+                      ? `${quantidade - unidadesFora} DE ${quantidade} NA PRATELEIRA`
+                      : "NA PRATELEIRA"}
                   </span>
                   <button
                     onClick={() => abrirEdicao(l)}
@@ -2386,7 +2845,23 @@ function FinanceiroTab({ emprestimos, cobrancas, pessoaById, livroById, totalPag
 }
 
 // ---------------- Ajustes ----------------
-function AjustesTab({ config, onChange, cloudConfig, cloudStatus, onConfigurarNuvem, onDesligarNuvem }) {
+function AjustesTab({
+  config,
+  onChange,
+  cloudConfig,
+  cloudStatus,
+  onConfigurarNuvem,
+  onDesligarNuvem,
+  ultimoSalvamento,
+  ultimoBackup,
+  backups,
+  carregandoBackups,
+  fazendoBackup,
+  onFazerBackup,
+  onAtualizarBackups,
+  onRestaurarBackup,
+  onApagarBackup,
+}) {
   const [pix, setPix] = useState(config.pix || "");
   const [recebedor, setRecebedor] = useState(config.recebedor || "");
   const [whatsappContato, setWhatsappContato] = useState(config.whatsappContato || "");
@@ -2394,6 +2869,7 @@ function AjustesTab({ config, onChange, cloudConfig, cloudStatus, onConfigurarNu
   const [promoAtiva, setPromoAtiva] = useState(config.promocao?.ativa || false);
   const [promoDescricao, setPromoDescricao] = useState(config.promocao?.descricao || "");
   const [promoValidoAte, setPromoValidoAte] = useState(config.promocao?.validoAte || "");
+  const [promoDesconto, setPromoDesconto] = useState(config.promocao?.desconto || "");
   const MODELO_COBRANCA_PADRAO =
     'Oi {nome}! 👋 Passando pra lembrar sobre o livro "{livro}" que te emprestei — falta {valor} do combinado. {pix} Qualquer coisa me chama! 🙏';
   const MODELO_RENOVACAO_PADRAO =
@@ -2403,6 +2879,25 @@ function AjustesTab({ config, onChange, cloudConfig, cloudStatus, onConfigurarNu
   const [colado, setColado] = useState("");
   const [docId, setDocId] = useState(cloudConfig?.docId || "principal");
   const [erroNuvem, setErroNuvem] = useState("");
+  const [restaurandoId, setRestaurandoId] = useState(null);
+  const [restauradoOk, setRestauradoOk] = useState(false);
+
+  useEffect(() => {
+    onAtualizarBackups();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function handleRestaurar(backup) {
+    setRestaurandoId(backup.id);
+    setRestauradoOk(false);
+    try {
+      await onRestaurarBackup(backup);
+      setRestauradoOk(true);
+    } catch (e) {
+      console.error("Erro ao restaurar backup:", e);
+    }
+    setRestaurandoId(null);
+  }
 
   function salvarGeral() {
     onChange({
@@ -2410,7 +2905,12 @@ function AjustesTab({ config, onChange, cloudConfig, cloudStatus, onConfigurarNu
       recebedor,
       whatsappContato,
       linkVitrine,
-      promocao: { ativa: promoAtiva, descricao: promoDescricao, validoAte: promoValidoAte },
+      promocao: {
+        ativa: promoAtiva,
+        descricao: promoDescricao,
+        validoAte: promoValidoAte,
+        desconto: promoDesconto ? parseFloat(promoDesconto) : 0,
+      },
       modeloCobranca,
       modeloRenovacao,
     });
@@ -2534,6 +3034,16 @@ function AjustesTab({ config, onChange, cloudConfig, cloudStatus, onConfigurarNu
           value={promoDescricao}
           onChange={(e) => setPromoDescricao(e.target.value)}
         />
+        <label style={labelStyle}>Desconto (%) — aplicado automaticamente no valor sugerido do empréstimo</label>
+        <Input
+          type="number"
+          step="1"
+          min="0"
+          max="100"
+          placeholder="ex: 50"
+          value={promoDesconto}
+          onChange={(e) => setPromoDesconto(e.target.value)}
+        />
         <label style={labelStyle}>Válida até (opcional)</label>
         <Input type="date" value={promoValidoAte} onChange={(e) => setPromoValidoAte(e.target.value)} />
         <Button style={{ alignSelf: "flex-start" }} onClick={salvarGeral}>
@@ -2645,6 +3155,83 @@ function AjustesTab({ config, onChange, cloudConfig, cloudStatus, onConfigurarNu
               Desligar sincronização
             </Button>
           </>
+        )}
+      </div>
+
+      <div
+        style={{
+          background: COLORS.card,
+          border: `1.5px solid ${COLORS.rule}`,
+          borderRadius: 10,
+          padding: 16,
+          marginTop: 16,
+          display: "flex",
+          flexDirection: "column",
+          gap: 10,
+        }}
+      >
+        <div style={{ fontFamily: "'Playfair Display', serif", fontWeight: 700, fontSize: 16 }}>
+          Backup e histórico de salvamento
+        </div>
+
+        <div style={{ fontSize: 12.5, fontFamily: "'JetBrains Mono', monospace", color: COLORS.inkSoft, lineHeight: 1.7 }}>
+          <div>{LABEL_SECAO.acervo}: salvo {fmtDataHora(ultimoSalvamento.acervo)}</div>
+          <div>{LABEL_SECAO.pessoas}: salvo {fmtDataHora(ultimoSalvamento.pessoas)}</div>
+          <div>{LABEL_SECAO.emprestimos}: salvo {fmtDataHora(ultimoSalvamento.emprestimos)}</div>
+          <div>{LABEL_SECAO.ajustes}: salvo {fmtDataHora(ultimoSalvamento.ajustes)}</div>
+        </div>
+
+        <div style={{ height: 1, background: COLORS.rule, margin: "4px 0" }} />
+
+        <div style={{ fontSize: 13.5 }}>
+          Último backup: <b>{ultimoBackup ? fmtDataHora(ultimoBackup) : "nenhum ainda"}</b>
+        </div>
+        <div style={{ fontSize: 12, color: COLORS.inkSoft }}>
+          Um backup automático é feito no máximo uma vez por dia, ao abrir o app. Você também pode fazer um manualmente
+          quando quiser — por exemplo antes de usar dois aparelhos ao mesmo tempo.
+        </div>
+        <Button style={{ alignSelf: "flex-start" }} onClick={onFazerBackup} disabled={fazendoBackup}>
+          {fazendoBackup ? "Fazendo backup…" : "Fazer backup agora"}
+        </Button>
+
+        <label style={{ ...labelStyle, marginTop: 6 }}>Backups disponíveis (acervo, pessoas, empréstimos e ajustes juntos)</label>
+        {carregandoBackups && <div style={{ fontSize: 12.5, color: COLORS.inkSoft }}>Carregando…</div>}
+        {!carregandoBackups && backups.length === 0 && (
+          <div style={{ fontSize: 12.5, color: COLORS.inkSoft }}>Nenhum backup ainda.</div>
+        )}
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: 280, overflowY: "auto" }}>
+          {backups.map((b) => (
+            <div
+              key={b.id}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                border: `1px solid ${COLORS.rule}`,
+                borderRadius: 8,
+                padding: "8px 10px",
+                background: "#fff",
+              }}
+            >
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 13 }}>{fmtDataHora(b.criadoEm)}</div>
+                <div style={{ fontSize: 11, color: COLORS.inkSoft, fontFamily: "'JetBrains Mono', monospace" }}>
+                  {b.tipo === "manual" ? "manual" : "automático"}
+                </div>
+              </div>
+              {restaurandoId === b.id ? (
+                <span style={{ fontSize: 12.5, color: COLORS.inkSoft }}>restaurando…</span>
+              ) : (
+                <BotaoExcluir label="restaurar" small onConfirm={() => handleRestaurar(b)} />
+              )}
+              <BotaoExcluir label="apagar" small onConfirm={() => onApagarBackup(b)} />
+            </div>
+          ))}
+        </div>
+        {restauradoOk && (
+          <div style={{ fontSize: 12.5, color: COLORS.sage }}>
+            ✓ Backup restaurado — os dados deste aparelho já foram atualizados.
+          </div>
         )}
       </div>
     </Section>
@@ -2803,6 +3390,7 @@ const inputBase = {
   width: "100%",
   boxSizing: "border-box",
 };
+
 
 const root = ReactDOM.createRoot(document.getElementById("root"));
 root.render(<App />);
