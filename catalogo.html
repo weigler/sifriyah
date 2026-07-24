@@ -266,7 +266,7 @@
 <div id="promoBanner"></div>
 
 <div id="busca">
-  <input type="text" id="campoBusca" placeholder="Buscar por título ou autor…">
+  <input type="text" id="campoBusca" placeholder="Buscar por título, autor, nível ou tag…">
   <select id="filtroCategoria">
     <option value="">Todas as categorias</option>
   </select>
@@ -325,6 +325,9 @@ function fmtDate(iso) {
   if (!iso) return "";
   const [y, m, d] = iso.split("-");
   return `${d}/${m}/${y}`;
+}
+function fmtMoney(v) {
+  return (v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 }
 function escapeHtml(s) {
   return (s || "")
@@ -418,7 +421,11 @@ function render() {
   const termo = (document.getElementById("campoBusca").value || "").trim().toLowerCase();
   const categoria = document.getElementById("filtroCategoria").value;
   const filtrados = todosLivros.filter((l) => {
-    const bateBusca = l.titulo.toLowerCase().includes(termo) || (l.autor || "").toLowerCase().includes(termo);
+    const bateBusca =
+      l.titulo.toLowerCase().includes(termo) ||
+      (l.autor || "").toLowerCase().includes(termo) ||
+      (l.nivel || "").toLowerCase().includes(termo) ||
+      (l.tags || []).some((t) => t.toLowerCase().includes(termo));
     const bateCategoria = !categoria || l.categoria === categoria;
     return bateBusca && bateCategoria;
   });
@@ -471,6 +478,7 @@ function render() {
               ${l.categoria ? `<div class="autor">${l.categoria}</div>` : ""}
               ${l.nivel ? `<div class="autor">${escapeHtml(l.nivel)}</div>` : ""}
               ${l.paginas ? `<div class="autor">${l.paginas} páginas</div>` : ""}
+              ${l.valorSemanal ? `<div class="autor">${fmtMoney(l.valorSemanal)}/semana</div>` : ""}
               ${sinopseHtml}
               ${l.linkExterno ? `<div class="autor"><a style="text-decoration:underline; color:inherit;" href="${escapeHtml(l.linkExterno)}" target="_blank" rel="noreferrer">🔗 Comprar na Amazon</a></div>` : ""}
               ${statusHtml}

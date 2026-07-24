@@ -240,7 +240,7 @@ async function sairComoAdminNuvem(firebaseConfig) {
 // pra dois aparelhos não sobrescreverem um o dado do outro (só "brigam" se mexerem na mesma seção)
 const SECOES = ["acervo", "pessoas", "emprestimos", "ajustes"];
 const LABEL_SECAO = { acervo: "Acervo", pessoas: "Pessoas", emprestimos: "Empréstimos", ajustes: "Ajustes" };
-const NIVEIS_LEITURA = ["Infantil", "Juvenil", "Iniciante", "Intermediário", "Avançado"];
+const NIVEIS_LEITURA = ["Infantil", "Juvenil", "Iniciante", "Intermediário", "Avançado", "Acadêmico"];
 const MAX_BACKUPS_AUTOMATICOS = 10;
 const BACKUP_LOCAL_KEY = "sifriyah-backups-local";
 
@@ -1316,6 +1316,7 @@ export default function App() {
               sinopse: l.sinopse || "",
               linkExterno: l.linkExterno || "",
               tags: l.tags || [],
+              valorSemanal: l.valorSemanal || null,
               disponivel,
               proximaData,
             };
@@ -2210,6 +2211,19 @@ function EmprestimosTab({
     });
   }
 
+  function mensagemConfirmacao(emp, livro, pessoa) {
+    const modelo =
+      config.modeloConfirmacao ||
+      `Oi {nome}! 👋 Seu empréstimo do livro "{livro}" foi confirmado! Início: {dataInicio}. Devolução prevista: {dataFim}. Valor combinado: {valor}. Qualquer dúvida é só chamar 📚`;
+    return preencherModelo(modelo, {
+      nome: pessoa ? pessoa.nome : "",
+      livro: livro ? livro.titulo : "",
+      dataInicio: fmtDate(emp.dataEmprestimo),
+      dataFim: fmtDate(emp.prazo),
+      valor: fmtMoney(emp.valorCombinado || 0),
+    });
+  }
+
   const lista = emprestimos
     .filter((e) => {
       if (filtro === "ativos") return !e.devolvido;
@@ -2420,6 +2434,7 @@ function EmprestimosTab({
             const diasRestantes = !emp.devolvido && emp.prazo ? Math.max(0, -daysBetween(emp.prazo)) : 0;
             const semanasNaoUsadas = Math.floor(diasRestantes / 7);
             const descontoSugerido = livro && livro.valorSemanal ? semanasNaoUsadas * livro.valorSemanal : 0;
+            const temFilaEsperando = filas.some((f) => f.livroId === emp.livroId);
             return (
               <div
                 key={emp.id}
@@ -2505,7 +2520,12 @@ function EmprestimosTab({
                         variant="subtle"
                         style={{ padding: "7px 12px", fontSize: 13 }}
                         onClick={() => onRenovarSemana(emp.id)}
-                        title="Adia o prazo em 7 dias e soma o valor semanal do livro, se cadastrado"
+                        disabled={temFilaEsperando}
+                        title={
+                          temFilaEsperando
+                            ? "Tem gente esperando na fila desse livro — não dá pra renovar."
+                            : "Adia o prazo em 7 dias e soma o valor semanal do livro, se cadastrado"
+                        }
                       >
                         📅 +1 semana
                       </Button>
@@ -2519,6 +2539,16 @@ function EmprestimosTab({
                       />
                     )}
                   </div>
+
+                  {pessoa && pessoa.telefone && (
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+                      <a href={linkWhatsApp(pessoa.telefone, mensagemConfirmacao(emp, livro, pessoa))} target="_blank" rel="noreferrer">
+                        <Button variant="whats" style={{ padding: "7px 12px", fontSize: 13 }}>
+                          💬 Confirmar empréstimo
+                        </Button>
+                      </a>
+                    </div>
+                  )}
 
                   {pessoa && pessoa.telefone && restante > 0 && (
                     <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
@@ -3627,6 +3657,19 @@ function PessoasTab({
                     código: {p.codigoUsuario}
                   </span>
                 )}
+                {p.codigoUsuario && p.telefone && (
+                  <a
+                    href={linkWhatsApp(
+                      p.telefone,
+                      `Oi ${p.nome}! Seu código de usuário na ${APP_NAME} é: ${p.codigoUsuario}\n\nGuarda esse código — é com ele que você entra na fila de espera de um livro direto pelo nosso catálogo online, sem precisar me mandar mensagem.`
+                    )}
+                    target="_blank"
+                    rel="noreferrer"
+                    style={{ fontSize: 12, color: COLORS.sage, textDecoration: "underline" }}
+                  >
+                    💬 enviar código
+                  </a>
+                )}
                 <button
                   onClick={() => onRegerarCodigo(p.id)}
                   style={{ background: "none", border: "none", color: COLORS.inkSoft, cursor: "pointer", fontSize: 12, textDecoration: "underline" }}
@@ -3970,8 +4013,11 @@ function AjustesTab({
     'Oi {nome}! 👋 Passando pra lembrar sobre o livro "{livro}" que te emprestei — falta {valor} do combinado. {pix} Qualquer coisa me chama! 🙏';
   const MODELO_RENOVACAO_PADRAO =
     'Oi {nome}! 👋 Só passando pra saber sobre o livro "{livro}" — o prazo era {prazo}. Você já terminou ou quer renovar por mais um tempo? Me avisa 🙂';
+  const MODELO_CONFIRMACAO_PADRAO =
+    'Oi {nome}! 👋 Seu empréstimo do livro "{livro}" foi confirmado! Início: {dataInicio}. Devolução prevista: {dataFim}. Valor combinado: {valor}. Qualquer dúvida é só chamar 📚';
   const [modeloCobranca, setModeloCobranca] = useState(config.modeloCobranca || MODELO_COBRANCA_PADRAO);
   const [modeloRenovacao, setModeloRenovacao] = useState(config.modeloRenovacao || MODELO_RENOVACAO_PADRAO);
+  const [modeloConfirmacao, setModeloConfirmacao] = useState(config.modeloConfirmacao || MODELO_CONFIRMACAO_PADRAO);
   const [colado, setColado] = useState("");
   const [docId, setDocId] = useState(cloudConfig?.docId || "principal");
   const [erroNuvem, setErroNuvem] = useState("");
@@ -4072,6 +4118,7 @@ function AjustesTab({
       },
       modeloCobranca,
       modeloRenovacao,
+      modeloConfirmacao,
     });
   }
 
@@ -4145,9 +4192,17 @@ function AjustesTab({
           Textos das mensagens
         </div>
         <div style={{ fontSize: 12, color: COLORS.inkSoft }}>
-          Use <code>{"{nome}"}</code>, <code>{"{livro}"}</code>, <code>{"{valor}"}</code>, <code>{"{prazo}"}</code> e{" "}
-          <code>{"{pix}"}</code> — eles são trocados automaticamente na hora de enviar.
+          Use <code>{"{nome}"}</code>, <code>{"{livro}"}</code>, <code>{"{valor}"}</code>, <code>{"{prazo}"}</code>,{" "}
+          <code>{"{dataInicio}"}</code>, <code>{"{dataFim}"}</code> e <code>{"{pix}"}</code> — eles são trocados
+          automaticamente na hora de enviar.
         </div>
+        <label style={labelStyle}>Mensagem de confirmação de empréstimo</label>
+        <textarea
+          value={modeloConfirmacao}
+          onChange={(e) => setModeloConfirmacao(e.target.value)}
+          rows={3}
+          style={{ ...inputBase, fontFamily: "'Source Serif 4', serif" }}
+        />
         <label style={labelStyle}>Mensagem de cobrança</label>
         <textarea
           value={modeloCobranca}
