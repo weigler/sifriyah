@@ -33,6 +33,17 @@ function uid() {
   return Math.random().toString(36).slice(2, 10);
 }
 
+// código curto de usuário (pra digitar no catálogo público) — sem 0/O, 1/I/L, pra evitar confusão
+const CODIGO_USUARIO_CHARS = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+function gerarCodigoUsuario(existentes) {
+  const usados = new Set((existentes || []).filter(Boolean).map((c) => c.toUpperCase()));
+  let codigo;
+  do {
+    codigo = Array.from({ length: 6 }, () => CODIGO_USUARIO_CHARS[Math.floor(Math.random() * CODIGO_USUARIO_CHARS.length)]).join("");
+  } while (usados.has(codigo));
+  return codigo;
+}
+
 function todayISO() {
   return new Date().toISOString().slice(0, 10);
 }
@@ -315,6 +326,53 @@ async function nuvemLimparPreCadastrosAntigos(firebaseConfig, docId) {
   snap.forEach((doc) => {
     const d = doc.data();
     if (d.aceitoEm && d.aceitoEm < limite) paraApagar.push(doc.ref);
+  });
+  if (paraApagar.length === 0) return;
+  const batch = db.batch();
+  paraApagar.forEach((ref) => batch.delete(ref));
+  await batch.commit();
+}
+
+// pedidos de "entrar na fila" enviados pela vitrine pública (sem senha) — vêm com código de
+// usuário (se a pessoa já tiver um) ou nome+telefone (se ainda não tiver se cadastrado)
+function nuvemOuvirPedidosFila(firebaseConfig, docId, onChange) {
+  inicializarFirebase(firebaseConfig).then((db) => {
+    db.collection("sifriyah_pedidos_fila")
+      .where("biblioteca", "==", docId)
+      .onSnapshot((snap) => {
+        const lista = [];
+        snap.forEach((doc) => lista.push({ id: doc.id, ...doc.data() }));
+        // só mostra os que ainda não foram atendidos — os atendidos ficam guardados
+        // por um tempo (rede de segurança), mas somem da lista de revisão
+        const pendentes = lista.filter((pf) => !pf.atendido);
+        pendentes.sort((a, b) => (b.criadoEm || 0) - (a.criadoEm || 0));
+        onChange(pendentes);
+      });
+  });
+}
+async function nuvemRemoverPedidoFila(firebaseConfig, id) {
+  const db = await inicializarFirebase(firebaseConfig);
+  await db.collection("sifriyah_pedidos_fila").doc(id).delete();
+}
+// em vez de apagar na hora, marca como atendido — fica guardado como histórico por um tempo
+async function nuvemMarcarAtendidoPedidoFila(firebaseConfig, id) {
+  const db = await inicializarFirebase(firebaseConfig);
+  await db.collection("sifriyah_pedidos_fila").doc(id).update({ atendido: true, atendidoEm: Date.now() });
+}
+const DIAS_GUARDAR_PEDIDO_FILA_ATENDIDO = 60;
+// limpa pedidos de fila já atendidos há mais de 60 dias — chamado uma vez por sessão
+async function nuvemLimparPedidosFilaAntigos(firebaseConfig, docId) {
+  const db = await inicializarFirebase(firebaseConfig);
+  const snap = await db
+    .collection("sifriyah_pedidos_fila")
+    .where("biblioteca", "==", docId)
+    .where("atendido", "==", true)
+    .get();
+  const limite = Date.now() - DIAS_GUARDAR_PEDIDO_FILA_ATENDIDO * 24 * 60 * 60 * 1000;
+  const paraApagar = [];
+  snap.forEach((doc) => {
+    const d = doc.data();
+    if (d.atendidoEm && d.atendidoEm < limite) paraApagar.push(doc.ref);
   });
   if (paraApagar.length === 0) return;
   const batch = db.batch();
@@ -994,6 +1052,47 @@ export default function App() {
     nuvemRemoverPreCadastro(cloudConfig, pc.id).catch(() => {});
   }
 
+  // ---- Pedidos de "entrar na fila" enviados pela vitrine pública ----
+  const [pedidosFila, setPedidosFila] = useState([]);
+  useEffect(() => {
+    if (!cloudConfig || !unlocked) return;
+    nuvemOuvirPedidosFila(cloudConfig, cloudDocId, setPedidosFila);
+  }, [cloudConfig, cloudDocId, unlocked]);
+
+  // uma vez por sessão, apaga pedidos de fila já atendidos há mais de 60 dias
+  useEffect(() => {
+    if (!cloudConfig || !unlocked) return;
+    nuvemLimparPedidosFilaAntigos(cloudConfig, cloudDocId).catch((e) =>
+      console.error("Erro ao limpar pedidos de fila antigos:", e)
+    );
+  }, [cloudConfig, cloudDocId, unlocked]);
+
+  // aceita um pedido de fila: acha a pessoa pelo código de usuário (ou pelo nome, se ela ainda
+  // não tinha código) e coloca de verdade na fila do livro; se o código não bater com ninguém
+  // e não veio nome junto, avisa em vez de falhar em silêncio
+  function aceitarPedidoFila(pf) {
+    let pessoa = pf.codigoUsuario
+      ? pessoas.find((p) => (p.codigoUsuario || "").toUpperCase() === pf.codigoUsuario.toUpperCase())
+      : null;
+    if (!pessoa && pf.nome) {
+      pessoa = pessoas.find(
+        (p) => nomeCompleto(p).toLowerCase() === `${pf.nome} ${pf.sobrenome || ""}`.trim().toLowerCase()
+      );
+    }
+    if (pessoa) {
+      adicionarNaFila(pf.livroId, pessoa.id);
+    } else if (pf.nome) {
+      adicionarNaFila(pf.livroId, null, { nome: pf.nome || "", sobrenome: pf.sobrenome || "", telefone: pf.telefone || "" });
+    } else {
+      return { ok: false, erro: `Código "${pf.codigoUsuario}" não encontrado. Confira com a pessoa ou adicione manualmente pela aba Pessoas.` };
+    }
+    nuvemMarcarAtendidoPedidoFila(cloudConfig, pf.id).catch(() => {});
+    return { ok: true };
+  }
+  function descartarPedidoFila(pf) {
+    nuvemRemoverPedidoFila(cloudConfig, pf.id).catch(() => {});
+  }
+
   async function desbloquear(senha) {
     const { secoes, legado } = await carregarSecoesBrutas();
     const temSecoesNovas = Object.keys(secoes).length > 0;
@@ -1525,7 +1624,14 @@ export default function App() {
         (p) => nomeCompleto(p).toLowerCase() === nomeCompleto(dados).toLowerCase()
       );
       if (existente) return prev.map((p) => (p.id === existente.id ? { ...p, ...dados } : p));
-      return [...prev, { id: uid(), nome: "", sobrenome: "", telefone: "", email: "", ...dados }];
+      const codigoUsuario = gerarCodigoUsuario(prev.map((p) => p.codigoUsuario));
+      return [...prev, { id: uid(), nome: "", sobrenome: "", telefone: "", email: "", codigoUsuario, ...dados }];
+    });
+  }
+  function regerarCodigoPessoa(id) {
+    setPessoas((prev) => {
+      const codigo = gerarCodigoUsuario(prev.map((p) => p.codigoUsuario));
+      return prev.map((p) => (p.id === id ? { ...p, codigoUsuario: codigo } : p));
     });
   }
   function removePessoa(id) {
@@ -1546,6 +1652,7 @@ export default function App() {
           sobrenome: (data.pessoaNovaSobrenome || "").trim(),
           telefone: data.telefone || "",
           email: "",
+          codigoUsuario: gerarCodigoUsuario(prev.map((p) => p.codigoUsuario)),
         },
       ]);
     }
@@ -1580,6 +1687,7 @@ export default function App() {
           sobrenome: (dadosNovaPessoa.sobrenome || "").trim(),
           telefone: dadosNovaPessoa.telefone || "",
           email: "",
+          codigoUsuario: gerarCodigoUsuario(prev.map((p) => p.codigoUsuario)),
         },
       ]);
     }
@@ -1820,6 +1928,7 @@ export default function App() {
           { id: "acervo", label: "Acervo" },
           { id: "categorias", label: "Categorias" },
           { id: "pessoas", label: "Pessoas" },
+          { id: "fila", label: "Fila" },
           { id: "financeiro", label: "Financeiro" },
           { id: "ajustes", label: "Ajustes" },
         ].map((t) => (
@@ -1903,9 +2012,18 @@ export default function App() {
             totalPago={totalPago}
             onUpsert={upsertPessoa}
             onRemove={removePessoa}
+            onRegerarCodigo={regerarCodigoPessoa}
             preCadastros={preCadastros}
             onImportarPreCadastro={importarPreCadastro}
             onDescartarPreCadastro={descartarPreCadastro}
+          />
+        )}
+        {tab === "fila" && (
+          <FilaPedidosTab
+            pedidosFila={pedidosFila}
+            livroById={livroById}
+            onAceitar={aceitarPedidoFila}
+            onDescartar={descartarPedidoFila}
           />
         )}
         {tab === "financeiro" && (
@@ -3250,6 +3368,7 @@ function PessoasTab({
   totalPago,
   onUpsert,
   onRemove,
+  onRegerarCodigo,
   preCadastros = [],
   onImportarPreCadastro,
   onDescartarPreCadastro,
@@ -3265,6 +3384,7 @@ function PessoasTab({
   const [editTel, setEditTel] = useState("");
   const [editEmail, setEditEmail] = useState("");
   const [editGenero, setEditGenero] = useState("");
+  const [editCodigo, setEditCodigo] = useState("");
   const [historicoAberto, setHistoricoAberto] = useState({});
 
   const resumo = pessoas.map((p) => {
@@ -3283,10 +3403,14 @@ function PessoasTab({
     setEditTel(p.telefone || "");
     setEditEmail(p.email || "");
     setEditGenero(p.genero || "");
+    setEditCodigo(p.codigoUsuario || "");
   }
 
   function salvarEdicao() {
-    onUpsert({ nome: editNome, sobrenome: editSobrenome, telefone: editTel, email: editEmail, genero: editGenero }, editandoId);
+    onUpsert(
+      { nome: editNome, sobrenome: editSobrenome, telefone: editTel, email: editEmail, genero: editGenero, codigoUsuario: editCodigo.trim().toUpperCase() },
+      editandoId
+    );
     setEditandoId(null);
   }
 
@@ -3452,6 +3576,21 @@ function PessoasTab({
                     <option value="F">Feminino</option>
                   </select>
                 </div>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <Input
+                    placeholder="Código de usuário"
+                    value={editCodigo}
+                    onChange={(e) => setEditCodigo(e.target.value.toUpperCase())}
+                    style={{ flex: "1 1 130px", padding: "7px 10px", fontSize: 13, fontFamily: "'JetBrains Mono', monospace" }}
+                  />
+                  <Button
+                    variant="subtle"
+                    style={{ padding: "7px 10px", fontSize: 12.5, whiteSpace: "nowrap" }}
+                    onClick={() => setEditCodigo(gerarCodigoUsuario(pessoas.map((x) => x.codigoUsuario)))}
+                  >
+                    🔄 gerar novo
+                  </Button>
+                </div>
                 <div style={{ display: "flex", gap: 8 }}>
                   <Button style={{ padding: "7px 12px", fontSize: 13 }} onClick={salvarEdicao}>
                     Salvar
@@ -3473,6 +3612,27 @@ function PessoasTab({
                   {p.telefone ? p.telefone : "sem celular"}
                   {p.email ? ` · ${p.email}` : ""}
                 </span>
+                {p.codigoUsuario && (
+                  <span
+                    style={{
+                      fontSize: 12,
+                      fontFamily: "'JetBrains Mono', monospace",
+                      background: COLORS.cream,
+                      border: `1px solid ${COLORS.rule}`,
+                      borderRadius: 6,
+                      padding: "3px 8px",
+                      letterSpacing: 1,
+                    }}
+                  >
+                    código: {p.codigoUsuario}
+                  </span>
+                )}
+                <button
+                  onClick={() => onRegerarCodigo(p.id)}
+                  style={{ background: "none", border: "none", color: COLORS.inkSoft, cursor: "pointer", fontSize: 12, textDecoration: "underline" }}
+                >
+                  {p.codigoUsuario ? "gerar novo código" : "gerar código"}
+                </button>
                 <button
                   onClick={() => abrirEdicao(p)}
                   style={{ background: "none", border: "none", color: COLORS.burgundy, cursor: "pointer", fontSize: 13, textDecoration: "underline" }}
@@ -3483,6 +3643,79 @@ function PessoasTab({
             )}
           </div>
         ))}
+      </div>
+    </Section>
+  );
+}
+
+// ---------------- Fila de espera (pedidos vindos da vitrine pública) ----------------
+function FilaPedidosTab({ pedidosFila, livroById, onAceitar, onDescartar }) {
+  const [erros, setErros] = useState({});
+
+  function handleAceitar(pf) {
+    const r = onAceitar(pf);
+    if (r && !r.ok) {
+      setErros((prev) => ({ ...prev, [pf.id]: r.erro }));
+    } else {
+      setErros((prev) => {
+        const { [pf.id]: _omit, ...resto } = prev;
+        return resto;
+      });
+    }
+  }
+
+  return (
+    <Section eyebrow="Vitrine pública" title="Fila">
+      <div style={{ fontSize: 13, color: COLORS.inkSoft, marginBottom: 16 }}>
+        Pedidos de "entrar na fila" enviados pelo catálogo público. Aceite pra colocar a pessoa de
+        verdade na fila do livro, ou descarte se não fizer sentido.
+      </div>
+      {pedidosFila.length === 0 && <EmptyState text="Nenhum pedido de fila pendente." />}
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {pedidosFila.map((pf) => {
+          const livro = livroById(pf.livroId);
+          return (
+            <div
+              key={pf.id}
+              style={{
+                background: COLORS.card,
+                border: `1.5px solid ${COLORS.rule}`,
+                borderRadius: 10,
+                padding: "12px 14px",
+                display: "flex",
+                flexDirection: "column",
+                gap: 8,
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <div style={{ flex: 1, minWidth: 160 }}>
+                  <div style={{ fontFamily: "'Playfair Display', serif", fontWeight: 700, fontSize: 15 }}>
+                    {livro ? livro.titulo : pf.tituloLivro || "(livro removido)"}
+                  </div>
+                  <div style={{ fontSize: 12.5, color: COLORS.inkSoft, marginTop: 2 }}>
+                    {pf.codigoUsuario ? (
+                      <>
+                        código:{" "}
+                        <b style={{ fontFamily: "'JetBrains Mono', monospace" }}>{pf.codigoUsuario}</b>
+                      </>
+                    ) : (
+                      <>
+                        {pf.nome} {pf.sobrenome || ""} · {pf.telefone || "sem celular"}
+                      </>
+                    )}
+                  </div>
+                </div>
+                <Button style={{ padding: "6px 12px", fontSize: 12.5 }} onClick={() => handleAceitar(pf)}>
+                  Aceitar
+                </Button>
+                <Button variant="ghost" style={{ padding: "6px 12px", fontSize: 12.5 }} onClick={() => onDescartar(pf)}>
+                  Descartar
+                </Button>
+              </div>
+              {erros[pf.id] && <div style={{ fontSize: 12.5, color: COLORS.rust }}>{erros[pf.id]}</div>}
+            </div>
+          );
+        })}
       </div>
     </Section>
   );

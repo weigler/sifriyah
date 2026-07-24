@@ -166,6 +166,42 @@
     text-align: center;
   }
   .btn-wrap { margin-top: auto; padding-top: 10px; }
+  .fila-form {
+    margin-top: 8px;
+    padding: 10px;
+    background: #F5EFE0;
+    border: 1.5px solid #D8CBB0;
+    border-radius: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .fila-form input {
+    width: 100%;
+    font-family: 'Source Serif 4', Georgia, serif;
+    font-size: 13px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    border: 1.5px solid #D8CBB0;
+    background: #fff;
+    box-sizing: border-box;
+  }
+  .fila-form .fila-sem-codigo-toggle button {
+    background: none;
+    border: none;
+    color: #6B2737;
+    font-size: 12px;
+    text-decoration: underline;
+    cursor: pointer;
+    padding: 0;
+  }
+  .fila-form .fila-sem-codigo {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .fila-form .fila-msg { font-size: 12.5px; margin-top: 2px; }
+  .fila-form button.btn { display: inline-block; }
   .vazio, .erro {
     text-align: center;
     color: #5B4E3F;
@@ -301,11 +337,59 @@ function linkReserva(livro) {
   const texto = `Oi! Vi no catálogo do ${bibliotecaNome} que o livro "${livro.titulo}" está disponível. Posso reservar?`;
   return `https://wa.me/${normalizaTelefone(whatsappContato)}?text=${encodeURIComponent(texto)}`;
 }
-function linkFilaEspera(livro) {
-  const texto = `Oi! O livro "${livro.titulo}" do ${bibliotecaNome} está emprestado agora${
-    livro.proximaData ? " (previsão de volta em " + fmtDate(livro.proximaData) + ")" : ""
-  }. Pode me avisar quando estiver disponível? Quero entrar na fila.`;
-  return `https://wa.me/${normalizaTelefone(whatsappContato)}?text=${encodeURIComponent(texto)}`;
+function toggleFilaForm(livroId) {
+  const el = document.getElementById(`fila-form-${livroId}`);
+  if (!el) return;
+  el.style.display = el.style.display === "none" ? "flex" : "none";
+}
+function toggleSemCodigo(livroId) {
+  const el = document.getElementById(`fila-sem-codigo-${livroId}`);
+  if (!el) return;
+  el.style.display = el.style.display === "none" ? "flex" : "none";
+}
+async function enviarPedidoFila(livroId) {
+  const livro = todosLivros.find((l) => l.id === livroId);
+  if (!livro) return;
+  const campoCodigo = document.getElementById(`fila-codigo-${livroId}`);
+  const campoNome = document.getElementById(`fila-nome-${livroId}`);
+  const campoSobrenome = document.getElementById(`fila-sobrenome-${livroId}`);
+  const campoTelefone = document.getElementById(`fila-telefone-${livroId}`);
+  const msg = document.getElementById(`fila-msg-${livroId}`);
+
+  const codigo = (campoCodigo.value || "").trim().toUpperCase();
+  const nome = (campoNome.value || "").trim();
+  const sobrenome = (campoSobrenome.value || "").trim();
+  const telefone = (campoTelefone.value || "").trim();
+
+  if (!codigo && !(nome && telefone)) {
+    msg.style.color = "#9C4A2C";
+    msg.textContent = "Digita seu código de usuário, ou seu nome e celular.";
+    return;
+  }
+  try {
+    const db = firebase.firestore();
+    await db.collection("sifriyah_pedidos_fila").add({
+      biblioteca: DOC_ID,
+      livroId,
+      tituloLivro: livro.titulo,
+      codigoUsuario: codigo || null,
+      nome: nome || null,
+      sobrenome: sobrenome || null,
+      telefone: telefone || null,
+      criadoEm: Date.now(),
+      atendido: false,
+    });
+    msg.style.color = "#4B6B4A";
+    msg.textContent = "Pedido enviado! Você entra na fila assim que a biblioteca confirmar.";
+    campoCodigo.value = "";
+    campoNome.value = "";
+    campoSobrenome.value = "";
+    campoTelefone.value = "";
+  } catch (err) {
+    msg.style.color = "#9C4A2C";
+    msg.textContent = "Não consegui enviar agora. Tenta de novo em instantes.";
+    console.error(err);
+  }
 }
 
 function atualizarCategorias() {
@@ -350,11 +434,27 @@ function render() {
         ? `<div class="status disponivel">● disponível agora</div>`
         : `<div class="status emprestado">● emprestado${l.proximaData ? " · previsão de volta em " + fmtDate(l.proximaData) : ""}</div>`;
       let botao = "";
-      if (whatsappContato) {
-        botao = l.disponivel
-          ? `<a class="btn" href="${linkReserva(l)}" target="_blank" rel="noreferrer">💬 Reservar</a>`
-          : `<a class="btn" style="background:#B8933E" href="${linkFilaEspera(l)}" target="_blank" rel="noreferrer">⏳ Entrar na fila</a>`;
+      if (l.disponivel) {
+        if (whatsappContato) {
+          botao = `<a class="btn" href="${linkReserva(l)}" target="_blank" rel="noreferrer">💬 Reservar</a>`;
+        }
+      } else {
+        botao = `<button type="button" class="btn" style="background:#B8933E" onclick="toggleFilaForm('${l.id}')">⏳ Entrar na fila</button>`;
       }
+      const filaFormHtml = !l.disponivel
+        ? `
+        <div class="fila-form" id="fila-form-${l.id}" style="display:none;">
+          <input type="text" id="fila-codigo-${l.id}" placeholder="Código de usuário (se já tiver)" maxlength="10">
+          <div class="fila-sem-codigo-toggle"><button type="button" onclick="toggleSemCodigo('${l.id}')">ainda não tenho código</button></div>
+          <div class="fila-sem-codigo" id="fila-sem-codigo-${l.id}" style="display:none;">
+            <input type="text" id="fila-nome-${l.id}" placeholder="Nome">
+            <input type="text" id="fila-sobrenome-${l.id}" placeholder="Sobrenome">
+            <input type="text" id="fila-telefone-${l.id}" placeholder="Celular com DDD">
+          </div>
+          <button type="button" class="btn" onclick="enviarPedidoFila('${l.id}')">Confirmar entrada na fila</button>
+          <div class="fila-msg" id="fila-msg-${l.id}"></div>
+        </div>`
+        : "";
       const capaHtml = l.capaUrl
         ? `<img class="capa" src="${l.capaUrl}" alt="">`
         : `<div class="capa-vazia">📕</div>`;
@@ -375,7 +475,7 @@ function render() {
               ${l.linkExterno ? `<div class="autor"><a style="text-decoration:underline; color:inherit;" href="${escapeHtml(l.linkExterno)}" target="_blank" rel="noreferrer">🔗 Comprar na Amazon</a></div>` : ""}
               ${statusHtml}
             </div>
-            ${botao ? `<div class="btn-wrap">${botao}</div>` : ""}
+            ${botao ? `<div class="btn-wrap">${botao}${filaFormHtml}</div>` : ""}
           </div>
         </div>`;
     })
