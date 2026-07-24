@@ -1994,6 +1994,14 @@ function EmprestimosTab({
     emprestimos.filter((e) => !e.devolvido).map((e) => e.pessoaId)
   );
 
+  // regra: quem deve algo de um empréstimo anterior (devolvido ou não) não pode pegar outro livro
+  // até quitar — soma o que falta pagar em cada empréstimo dessa pessoa
+  function pessoaTemDebito(pessoaId) {
+    return emprestimos.some(
+      (e) => e.pessoaId === pessoaId && Math.max(0, (e.valorCombinado || 0) - totalPago(e)) > 0
+    );
+  }
+
   // auto-preenchimento: ao escolher o livro, sugere valor combinado (valor semanal x limite de
   // semanas, já com desconto da promoção ativa) e a data de devolução (hoje + limite de semanas)
   useEffect(() => {
@@ -2025,6 +2033,10 @@ function EmprestimosTab({
     }
     if (pessoaExistente && pessoasComEmprestimoAtivo.has(pessoaExistente.id)) {
       setErroForm(`${nomeCompleto(pessoaExistente)} já está com um livro emprestado. Só é permitido um por vez.`);
+      return;
+    }
+    if (pessoaExistente && pessoaTemDebito(pessoaExistente.id)) {
+      setErroForm(`${nomeCompleto(pessoaExistente)} tem um valor pendente de um empréstimo anterior. Regularize o pagamento antes de emprestar outro livro.`);
       return;
     }
 
@@ -2645,19 +2657,17 @@ function AcervoTab({
         {/* 2 — Autor (obrigatório) */}
         <Input placeholder="Autor" value={autor} onChange={(e) => setAutor(e.target.value)} />
 
-        {/* 3 — Páginas / Aquisição */}
+        {/* 3 — Dia de aquisição / Páginas / Unidades */}
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <Input
-            type="number"
-            placeholder="Páginas"
-            value={paginas}
-            onChange={(e) => setPaginas(e.target.value)}
-            style={{ flex: "1 1 110px" }}
-          />
-          <div style={{ flex: "1 1 160px" }}>
-            <label style={{ ...labelStyle, marginBottom: 2, display: "block" }}>Dia de aquisição</label>
+          <CampoCol label="Dia de aquisição">
             <Input type="date" value={dataAquisicao} onChange={(e) => setDataAquisicao(e.target.value)} />
-          </div>
+          </CampoCol>
+          <CampoCol label="Páginas">
+            <Input type="number" placeholder="Páginas" value={paginas} onChange={(e) => setPaginas(e.target.value)} />
+          </CampoCol>
+          <CampoCol label="Unidades">
+            <Input type="number" min="1" placeholder="1" value={quantidade} onChange={(e) => setQuantidade(e.target.value)} />
+          </CampoCol>
         </div>
 
         {/* 4 — Categoria / Nível de leitura */}
@@ -2676,7 +2686,7 @@ function AcervoTab({
           </select>
         </div>
 
-        {/* 5 — Valor semanal / Valor extra / Unidades / Semanas iniciais */}
+        {/* 5 — Valor semanal / Valor extra / Semanas iniciais */}
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <CampoCol label="Valor semanal">
             <Input
@@ -2695,16 +2705,6 @@ function AcervoTab({
               placeholder="R$"
               value={valorSemanaExtra}
               onChange={(e) => setValorSemanaExtra(e.target.value)}
-              style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", fontSize: 13 }}
-            />
-          </CampoCol>
-          <CampoCol label="Unidades">
-            <Input
-              type="number"
-              min="1"
-              placeholder="1"
-              value={quantidade}
-              onChange={(e) => setQuantidade(e.target.value)}
               style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", fontSize: 13 }}
             />
           </CampoCol>
@@ -2830,8 +2830,21 @@ function AcervoTab({
                   <Input value={editTitulo} onChange={(e) => setEditTitulo(e.target.value)} placeholder="Título" />
                   <Input value={editAutor} onChange={(e) => setEditAutor(e.target.value)} placeholder="Autor" />
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                    <Input type="number" value={editPaginas} onChange={(e) => setEditPaginas(e.target.value)} style={{ flex: "1 1 100px" }} placeholder="Páginas" />
-                    <Input type="date" value={editData} onChange={(e) => setEditData(e.target.value)} style={{ flex: "1 1 140px" }} />
+                    <CampoCol label="Dia de aquisição">
+                      <Input type="date" value={editData} onChange={(e) => setEditData(e.target.value)} />
+                    </CampoCol>
+                    <CampoCol label="Páginas">
+                      <Input type="number" value={editPaginas} onChange={(e) => setEditPaginas(e.target.value)} placeholder="Páginas" />
+                    </CampoCol>
+                    <CampoCol label="Unidades">
+                      <Input
+                        type="number"
+                        min="1"
+                        placeholder="1"
+                        value={editQuantidade}
+                        onChange={(e) => setEditQuantidade(e.target.value)}
+                      />
+                    </CampoCol>
                   </div>
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                     <select value={editCategoria} onChange={(e) => setEditCategoria(e.target.value)} style={{ ...inputBase, flex: "1 1 130px" }}>
@@ -2865,16 +2878,6 @@ function AcervoTab({
                         placeholder="R$"
                         value={editValorSemanaExtra}
                         onChange={(e) => setEditValorSemanaExtra(e.target.value)}
-                        style={{ width: "100%", boxSizing: "border-box", padding: "7px 10px", fontSize: 13 }}
-                      />
-                    </CampoCol>
-                    <CampoCol label="Unidades">
-                      <Input
-                        type="number"
-                        min="1"
-                        placeholder="1"
-                        value={editQuantidade}
-                        onChange={(e) => setEditQuantidade(e.target.value)}
                         style={{ width: "100%", boxSizing: "border-box", padding: "7px 10px", fontSize: 13 }}
                       />
                     </CampoCol>
