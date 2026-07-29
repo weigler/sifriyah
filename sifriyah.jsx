@@ -262,7 +262,7 @@ async function sairComoAdminNuvem(firebaseConfig) {
 const SECOES = ["acervo", "pessoas", "emprestimos", "ajustes"];
 const LABEL_SECAO = { acervo: "Acervo", pessoas: "Pessoas", emprestimos: "Empréstimos", ajustes: "Ajustes" };
 const NIVEIS_LEITURA = ["Infantil", "Juvenil", "Iniciante", "Intermediário", "Avançado", "Acadêmico"];
-const MAX_BACKUPS_AUTOMATICOS = 10;
+const MAX_BACKUPS_AUTOMATICOS_PADRAO = 10;
 const BACKUP_LOCAL_KEY = "sifriyah-backups-local";
 
 async function nuvemLerDoc(firebaseConfig, docId) {
@@ -1407,6 +1407,7 @@ export default function App() {
   }
 
   async function fazerBackup(tipo) {
+    const maxAutomaticos = config.maxBackupsAutomaticos || MAX_BACKUPS_AUTOMATICOS_PADRAO;
     const secoesAtuais = montarSecoes({ livros, categorias, tags, pessoas, emprestimos, cobrancas, filas, config });
     const blobsPorSecao = {};
     for (const s of SECOES) {
@@ -1418,8 +1419,8 @@ export default function App() {
       if (tipo === "automatico") {
         const lista = await nuvemListarBackups(cloudConfig, cloudDocId);
         const automaticos = lista.filter((b) => b.tipo === "automatico");
-        if (automaticos.length > MAX_BACKUPS_AUTOMATICOS) {
-          for (const b of automaticos.slice(MAX_BACKUPS_AUTOMATICOS)) {
+        if (automaticos.length > maxAutomaticos) {
+          for (const b of automaticos.slice(maxAutomaticos)) {
             await nuvemApagarBackup(cloudConfig, b.id).catch(() => {});
           }
         }
@@ -1431,8 +1432,8 @@ export default function App() {
       const automaticos = lista.filter((b) => b.tipo === "automatico");
       const listaAtualizada =
         tipo === "manual"
-          ? [novoItem, ...manuais, ...automaticos.slice(0, MAX_BACKUPS_AUTOMATICOS)]
-          : [...manuais, novoItem, ...automaticos].slice(0, manuais.length + MAX_BACKUPS_AUTOMATICOS);
+          ? [novoItem, ...manuais, ...automaticos.slice(0, maxAutomaticos)]
+          : [...manuais, novoItem, ...automaticos].slice(0, manuais.length + maxAutomaticos);
       listaAtualizada.sort((a, b) => b.criadoEm - a.criadoEm);
       await localSalvarListaBackups(listaAtualizada);
     }
@@ -4149,6 +4150,7 @@ function AjustesTab({
   const [recebedor, setRecebedor] = useState(config.recebedor || "");
   const [whatsappContato, setWhatsappContato] = useState(config.whatsappContato || "");
   const [valorMultaSemanal, setValorMultaSemanal] = useState(config.valorMultaSemanal || "");
+  const [maxBackupsAutomaticos, setMaxBackupsAutomaticos] = useState(config.maxBackupsAutomaticos || "");
   const [linkVitrine, setLinkVitrine] = useState(config.linkVitrine || "");
   const [promoAtiva, setPromoAtiva] = useState(config.promocao?.ativa || false);
   const [promoDescricao, setPromoDescricao] = useState(config.promocao?.descricao || "");
@@ -4256,6 +4258,7 @@ function AjustesTab({
       whatsappContato,
       linkVitrine,
       valorMultaSemanal: valorMultaSemanal ? parseFloat(valorMultaSemanal) : 0,
+      maxBackupsAutomaticos: maxBackupsAutomaticos ? parseInt(maxBackupsAutomaticos, 10) : 0,
       promocao: {
         ativa: promoAtiva,
         descricao: promoDescricao,
@@ -4324,6 +4327,14 @@ function AjustesTab({
           value={valorMultaSemanal}
           onChange={(e) => setValorMultaSemanal(e.target.value)}
           placeholder="deixe em branco pra usar o valor da semana extra de cada livro"
+        />
+        <label style={labelStyle}>Quantos backups automáticos guardar (padrão: 10)</label>
+        <Input
+          type="number"
+          min="1"
+          value={maxBackupsAutomaticos}
+          onChange={(e) => setMaxBackupsAutomaticos(e.target.value)}
+          placeholder="10"
         />
         <Button style={{ alignSelf: "flex-start" }} onClick={salvarGeral}>
           Salvar
