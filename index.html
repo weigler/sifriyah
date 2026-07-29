@@ -20,7 +20,7 @@
 <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
-<script id="app-source" type="text/plain">const { useState, useEffect, useMemo } = React;
+<script id="app-source" type="text/plain">const { useState, useEffect, useMemo, useRef } = React;
 
 window.storage = {
   async get(key) {
@@ -112,6 +112,26 @@ function somarSemanas(iso, semanas) {
   const d = new Date(iso + "T00:00:00");
   d.setDate(d.getDate() + semanas * 7);
   return d.toISOString().slice(0, 10);
+}
+
+// dias de atraso de um empréstimo (0 se já foi devolvido, sem prazo, ou ainda dentro do prazo)
+function diasAtraso(emp) {
+  if (!emp || emp.devolvido || !emp.prazo) return 0;
+  return Math.max(0, daysBetween(emp.prazo));
+}
+
+// multa por atraso: cobra o valor da semana extra do livro (ou o valor semanal, se não houver
+// um valor de semana extra específico) por cada semana ou fração de atraso — a mesma lógica de
+// "renovar por mais uma semana", só que cobrada automaticamente quando ninguém renovou a tempo.
+// Pode ser anulada manualmente por empréstimo (emp.multaAnulada), pra cobrir esquecimentos de
+// marcar a devolução no sistema.
+function calcularMulta(emp, livro) {
+  if (!emp || emp.multaAnulada) return 0;
+  const dias = diasAtraso(emp);
+  if (dias <= 0) return 0;
+  const semanas = Math.ceil(dias / 7);
+  const valorSemana = (livro && (livro.valorSemanaExtra || livro.valorSemanal)) || 0;
+  return semanas * valorSemana;
 }
 
 // calcula o valor do empréstimo a partir do valor semanal x limite de semanas do livro,
@@ -1086,25 +1106,62 @@ function App() {
     nuvemRemoverPreCadastro(cloudConfig, pc.id).catch(() => {});
   }
 
-  // ---- Pedidos de "entrar na fila" enviados pela vitrine pública ----
+  // ---- Pedidos vindos da vitrine pública: fila de espera (livro emprestado) e reserva (livro
+  // disponível) — mesma coleção, diferenciados pelo campo "tipo" ----
   const [pedidosFila, setPedidosFila] = useState([]);
   useEffect(() => {
     if (!cloudConfig || !unlocked) return;
     nuvemOuvirPedidosFila(cloudConfig, cloudDocId, setPedidosFila);
   }, [cloudConfig, cloudDocId, unlocked]);
 
-  // uma vez por sessão, apaga pedidos de fila já atendidos há mais de 60 dias
+  // uma vez por sessão, apaga pedidos já atendidos há mais de 60 dias
   useEffect(() => {
     if (!cloudConfig || !unlocked) return;
     nuvemLimparPedidosFilaAntigos(cloudConfig, cloudDocId).catch((e) =>
-      console.error("Erro ao limpar pedidos de fila antigos:", e)
+      console.error("Erro ao limpar pedidos antigos:", e)
     );
   }, [cloudConfig, cloudDocId, unlocked]);
 
+  // notifica (aviso do navegador) quando chega um pedido novo de fila/reserva, com a aba aberta
+  const [notifPermitida, setNotifPermitida] = useState(
+    typeof Notification !== "undefined" && Notification.permission === "granted"
+  );
+  async function pedirPermissaoNotificacao() {
+    if (typeof Notification === "undefined") return;
+    const r = await Notification.requestPermission();
+    setNotifPermitida(r === "granted");
+  }
+  const pedidosFilaAnterior = useRef(null);
+  useEffect(() => {
+    if (pedidosFilaAnterior.current === null) {
+      pedidosFilaAnterior.current = pedidosFila.map((pf) => pf.id);
+      return;
+    }
+    const idsAnteriores = new Set(pedidosFilaAnterior.current);
+    const novos = pedidosFila.filter((pf) => !idsAnteriores.has(pf.id));
+    if (novos.length > 0 && notifPermitida && typeof Notification !== "undefined") {
+      novos.forEach((pf) => {
+        try {
+          new Notification(pf.tipo === "reserva" ? "Sifriyah — nova reserva" : "Sifriyah — novo pedido de fila", {
+            body: pf.tituloLivro ? `${pf.tituloLivro}${pf.codigoUsuario ? " · " + pf.codigoUsuario : ""}` : "Você tem um novo pedido pendente.",
+          });
+        } catch (e) {
+          // navegador pode bloquear silenciosamente — sem problema
+        }
+      });
+    }
+    pedidosFilaAnterior.current = pedidosFila.map((pf) => pf.id);
+  }, [pedidosFila, notifPermitida]);
+
   // aceita um pedido de fila: acha a pessoa pelo código de usuário (ou pelo nome, se ela ainda
   // não tinha código) e coloca de verdade na fila do livro; se o código não bater com ninguém
-  // e não veio nome junto, avisa em vez de falhar em silêncio
+  // e não veio nome junto, avisa em vez de falhar em silêncio. Pedidos de reserva não têm uma
+  // "fila digital" própria — aceitar só marca como atendido (o combinado é falar com a pessoa)
   function aceitarPedidoFila(pf) {
+    if (pf.tipo === "reserva") {
+      nuvemMarcarAtendidoPedidoFila(cloudConfig, pf.id).catch(() => {});
+      return { ok: true };
+    }
     let pessoa = pf.codigoUsuario
       ? pessoas.find((p) => (p.codigoUsuario || "").toUpperCase() === pf.codigoUsuario.toUpperCase())
       : null;
@@ -1790,6 +1847,12 @@ function App() {
     );
   }
 
+  // anula (ou reativa) a multa por atraso de um empréstimo — útil quando o livro já foi
+  // devolvido de verdade mas só esqueceram de marcar isso no sistema a tempo
+  function alternarMultaAnulada(id) {
+    setEmprestimos((prev) => prev.map((e) => (e.id === id ? { ...e, multaAnulada: !e.multaAnulada } : e)));
+  }
+
   function addPagamento(id, valor) {
     const v = parseFloat(valor);
     if (!v || v <= 0) return;
@@ -1963,7 +2026,7 @@ function App() {
           { id: "acervo", label: "Acervo" },
           { id: "categorias", label: "Categorias" },
           { id: "pessoas", label: "Pessoas" },
-          { id: "fila", label: "Fila" },
+          { id: "fila", label: "Fila", badge: pedidosFila.length },
           { id: "financeiro", label: "Financeiro" },
           { id: "ajustes", label: "Ajustes" },
         ].map((t) => (
@@ -1987,6 +2050,21 @@ function App() {
             }}
           >
             {t.label}
+            {!!t.badge && (
+              <span
+                style={{
+                  marginLeft: 6,
+                  background: COLORS.rust,
+                  color: "#fff",
+                  borderRadius: 10,
+                  fontSize: 10.5,
+                  padding: "1px 6px",
+                  fontWeight: 700,
+                }}
+              >
+                {t.badge}
+              </span>
+            )}
           </button>
         ))}
       </div>
@@ -2006,6 +2084,7 @@ function App() {
             onAdd={addEmprestimo}
             onDevolver={marcarDevolvido}
             onRenovarSemana={renovarSemana}
+            onAlternarMultaAnulada={alternarMultaAnulada}
             onPagar={addPagamento}
             onRemoverPagamento={removerPagamento}
             onRemover={removeEmprestimo}
@@ -2096,6 +2175,8 @@ function App() {
             statusAdminAuth={statusAdminAuth}
             onEntrarAdmin={entrarAdmin}
             onSairAdmin={sairAdmin}
+            notifPermitida={notifPermitida}
+            onPedirPermissaoNotificacao={pedirPermissaoNotificacao}
           />
         )}
       </div>
@@ -2117,6 +2198,7 @@ function EmprestimosTab({
   onAdd,
   onDevolver,
   onRenovarSemana,
+  onAlternarMultaAnulada,
   onPagar,
   onRemoverPagamento,
   onRemover,
@@ -2148,11 +2230,13 @@ function EmprestimosTab({
   );
 
   // regra: quem deve algo de um empréstimo anterior (devolvido ou não) não pode pegar outro livro
-  // até quitar — soma o que falta pagar em cada empréstimo dessa pessoa
+  // até quitar — soma o que falta pagar em cada empréstimo dessa pessoa, incluindo multa por atraso
   function pessoaTemDebito(pessoaId) {
-    return emprestimos.some(
-      (e) => e.pessoaId === pessoaId && Math.max(0, (e.valorCombinado || 0) - totalPago(e)) > 0
-    );
+    return emprestimos.some((e) => {
+      if (e.pessoaId !== pessoaId) return false;
+      const multa = calcularMulta(e, livroById(e.livroId));
+      return Math.max(0, (e.valorCombinado || 0) + multa - totalPago(e)) > 0;
+    });
   }
 
   // auto-preenchimento: ao escolher o livro, sugere valor combinado (valor semanal x limite de
@@ -2221,7 +2305,8 @@ function EmprestimosTab({
   }
 
   function mensagemCobranca(emp, livro, pessoa) {
-    const restante = Math.max(0, (emp.valorCombinado || 0) - totalPago(emp));
+    const multa = calcularMulta(emp, livro);
+    const restante = Math.max(0, (emp.valorCombinado || 0) + multa - totalPago(emp));
     const pixTexto = config.pix ? `Pix: ${config.pix}${config.recebedor ? " (" + config.recebedor + ")" : ""}.` : "";
     const modelo =
       config.modeloCobranca ||
@@ -2464,7 +2549,9 @@ function EmprestimosTab({
             const livro = livroById(emp.livroId);
             const pessoa = pessoaById(emp.pessoaId);
             const pago = totalPago(emp);
-            const restante = Math.max(0, (emp.valorCombinado || 0) - pago);
+            const atraso = diasAtraso(emp);
+            const multa = calcularMulta(emp, livro);
+            const restante = Math.max(0, (emp.valorCombinado || 0) + multa - pago);
             const diasRestantes = !emp.devolvido && emp.prazo ? Math.max(0, -daysBetween(emp.prazo)) : 0;
             const semanasNaoUsadas = Math.floor(diasRestantes / 7);
             const descontoSugerido = livro && livro.valorSemanal ? semanasNaoUsadas * livro.valorSemanal : 0;
@@ -2491,6 +2578,31 @@ function EmprestimosTab({
                     {emp.prazo ? ` · prazo ${fmtDate(emp.prazo)}` : ""}
                   </div>
 
+                  {atraso > 0 && (
+                    <div
+                      style={{
+                        fontSize: 12.5,
+                        color: emp.multaAnulada ? COLORS.inkSoft : COLORS.rust,
+                        marginBottom: 6,
+                        display: "flex",
+                        gap: 8,
+                        alignItems: "center",
+                        flexWrap: "wrap",
+                      }}
+                    >
+                      <span>
+                        ⚠ atrasado {atraso} dia{atraso === 1 ? "" : "s"}
+                        {emp.multaAnulada ? " · multa anulada" : ` · multa: ${fmtMoney(multa)}`}
+                      </span>
+                      <button
+                        onClick={() => onAlternarMultaAnulada(emp.id)}
+                        style={{ background: "none", border: "none", color: COLORS.burgundy, cursor: "pointer", fontSize: 12, textDecoration: "underline" }}
+                      >
+                        {emp.multaAnulada ? "reativar multa" : "anular multa"}
+                      </button>
+                    </div>
+                  )}
+
                   <div
                     style={{
                       fontFamily: "'JetBrains Mono', monospace",
@@ -2502,6 +2614,7 @@ function EmprestimosTab({
                     }}
                   >
                     <span>combinado: {fmtMoney(emp.valorCombinado)}</span>
+                    {multa > 0 && <span style={{ color: COLORS.rust }}>multa: {fmtMoney(multa)}</span>}
                     <span style={{ color: COLORS.sage }}>pago: {fmtMoney(pago)}</span>
                     {restante > 0 && <span style={{ color: COLORS.rust }}>falta: {fmtMoney(restante)}</span>}
                   </div>
@@ -3726,6 +3839,49 @@ function PessoasTab({
 }
 
 // ---------------- Fila de espera (pedidos vindos da vitrine pública) ----------------
+function ListaPedidosCard({ pf, livroById, erro, onAceitar, onDescartar }) {
+  const livro = livroById(pf.livroId);
+  return (
+    <div
+      style={{
+        background: COLORS.card,
+        border: `1.5px solid ${COLORS.rule}`,
+        borderRadius: 10,
+        padding: "12px 14px",
+        display: "flex",
+        flexDirection: "column",
+        gap: 8,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <div style={{ flex: 1, minWidth: 160 }}>
+          <div style={{ fontFamily: "'Playfair Display', serif", fontWeight: 700, fontSize: 15 }}>
+            {livro ? livro.titulo : pf.tituloLivro || "(livro removido)"}
+          </div>
+          <div style={{ fontSize: 12.5, color: COLORS.inkSoft, marginTop: 2 }}>
+            {pf.codigoUsuario ? (
+              <>
+                código: <b style={{ fontFamily: "'JetBrains Mono', monospace" }}>{pf.codigoUsuario}</b>
+              </>
+            ) : (
+              <>
+                {pf.nome} {pf.sobrenome || ""} · {pf.telefone || "sem celular"}
+              </>
+            )}
+          </div>
+        </div>
+        <Button style={{ padding: "6px 12px", fontSize: 12.5 }} onClick={() => onAceitar(pf)}>
+          Aceitar
+        </Button>
+        <Button variant="ghost" style={{ padding: "6px 12px", fontSize: 12.5 }} onClick={() => onDescartar(pf)}>
+          Descartar
+        </Button>
+      </div>
+      {erro && <div style={{ fontSize: 12.5, color: COLORS.rust }}>{erro}</div>}
+    </div>
+  );
+}
+
 function FilaPedidosTab({ pedidosFila, livroById, onAceitar, onDescartar }) {
   const [erros, setErros] = useState({});
 
@@ -3741,58 +3897,37 @@ function FilaPedidosTab({ pedidosFila, livroById, onAceitar, onDescartar }) {
     }
   }
 
+  const reservas = pedidosFila.filter((pf) => pf.tipo === "reserva");
+  const fila = pedidosFila.filter((pf) => pf.tipo !== "reserva");
+
   return (
     <Section eyebrow="Vitrine pública" title="Fila">
-      <div style={{ fontSize: 13, color: COLORS.inkSoft, marginBottom: 16 }}>
-        Pedidos de "entrar na fila" enviados pelo catálogo público. Aceite pra colocar a pessoa de
-        verdade na fila do livro, ou descarte se não fizer sentido.
+      <div style={{ fontFamily: "'Playfair Display', serif", fontWeight: 700, fontSize: 15, marginBottom: 6 }}>
+        Reservas
       </div>
-      {pedidosFila.length === 0 && <EmptyState text="Nenhum pedido de fila pendente." />}
+      <div style={{ fontSize: 13, color: COLORS.inkSoft, marginBottom: 12 }}>
+        Pedidos de reserva de livros disponíveis, enviados pelo catálogo público. Aceite pra
+        marcar que já combinou a retirada com a pessoa, ou descarte se não fizer sentido.
+      </div>
+      {reservas.length === 0 && <EmptyState text="Nenhuma reserva pendente." />}
+      <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 24 }}>
+        {reservas.map((pf) => (
+          <ListaPedidosCard key={pf.id} pf={pf} livroById={livroById} erro={erros[pf.id]} onAceitar={handleAceitar} onDescartar={onDescartar} />
+        ))}
+      </div>
+
+      <div style={{ fontFamily: "'Playfair Display', serif", fontWeight: 700, fontSize: 15, marginBottom: 6 }}>
+        Fila de espera
+      </div>
+      <div style={{ fontSize: 13, color: COLORS.inkSoft, marginBottom: 12 }}>
+        Pedidos de "entrar na fila" de livros emprestados, enviados pelo catálogo público. Aceite
+        pra colocar a pessoa de verdade na fila do livro, ou descarte se não fizer sentido.
+      </div>
+      {fila.length === 0 && <EmptyState text="Nenhum pedido de fila pendente." />}
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-        {pedidosFila.map((pf) => {
-          const livro = livroById(pf.livroId);
-          return (
-            <div
-              key={pf.id}
-              style={{
-                background: COLORS.card,
-                border: `1.5px solid ${COLORS.rule}`,
-                borderRadius: 10,
-                padding: "12px 14px",
-                display: "flex",
-                flexDirection: "column",
-                gap: 8,
-              }}
-            >
-              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                <div style={{ flex: 1, minWidth: 160 }}>
-                  <div style={{ fontFamily: "'Playfair Display', serif", fontWeight: 700, fontSize: 15 }}>
-                    {livro ? livro.titulo : pf.tituloLivro || "(livro removido)"}
-                  </div>
-                  <div style={{ fontSize: 12.5, color: COLORS.inkSoft, marginTop: 2 }}>
-                    {pf.codigoUsuario ? (
-                      <>
-                        código:{" "}
-                        <b style={{ fontFamily: "'JetBrains Mono', monospace" }}>{pf.codigoUsuario}</b>
-                      </>
-                    ) : (
-                      <>
-                        {pf.nome} {pf.sobrenome || ""} · {pf.telefone || "sem celular"}
-                      </>
-                    )}
-                  </div>
-                </div>
-                <Button style={{ padding: "6px 12px", fontSize: 12.5 }} onClick={() => handleAceitar(pf)}>
-                  Aceitar
-                </Button>
-                <Button variant="ghost" style={{ padding: "6px 12px", fontSize: 12.5 }} onClick={() => onDescartar(pf)}>
-                  Descartar
-                </Button>
-              </div>
-              {erros[pf.id] && <div style={{ fontSize: 12.5, color: COLORS.rust }}>{erros[pf.id]}</div>}
-            </div>
-          );
-        })}
+        {fila.map((pf) => (
+          <ListaPedidosCard key={pf.id} pf={pf} livroById={livroById} erro={erros[pf.id]} onAceitar={handleAceitar} onDescartar={onDescartar} />
+        ))}
       </div>
     </Section>
   );
@@ -3800,7 +3935,8 @@ function FilaPedidosTab({ pedidosFila, livroById, onAceitar, onDescartar }) {
 
 // ---------------- Financeiro ----------------
 function FinanceiroTab({ emprestimos, cobrancas, pessoaById, livroById, totalPago, onRemoverCobranca }) {
-  const totalCombinado = emprestimos.reduce((s, e) => s + (e.valorCombinado || 0), 0);
+  const totalMultas = emprestimos.reduce((s, e) => s + calcularMulta(e, livroById(e.livroId)), 0);
+  const totalCombinado = emprestimos.reduce((s, e) => s + (e.valorCombinado || 0), 0) + totalMultas;
   const totalRecebido = emprestimos.reduce((s, e) => s + totalPago(e), 0);
   const totalPendente = Math.max(0, totalCombinado - totalRecebido);
 
@@ -3882,6 +4018,7 @@ function FinanceiroTab({ emprestimos, cobrancas, pessoaById, livroById, totalPag
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 24 }}>
           {[
             { label: "combinado (todos)", valor: totalCombinado, cor: COLORS.ink },
+            { label: "multas em aberto", valor: totalMultas, cor: COLORS.rust },
             { label: "recebido", valor: totalRecebido, cor: COLORS.sage },
             { label: "pendente", valor: totalPendente, cor: COLORS.rust },
           ].map((c) => (
@@ -4034,6 +4171,8 @@ function AjustesTab({
   statusAdminAuth,
   onEntrarAdmin,
   onSairAdmin,
+  notifPermitida,
+  onPedirPermissaoNotificacao,
 }) {
   const [pix, setPix] = useState(config.pix || "");
   const [recebedor, setRecebedor] = useState(config.recebedor || "");
@@ -4203,11 +4342,38 @@ function AjustesTab({
         <Input value={pix} onChange={(e) => setPix(e.target.value)} placeholder="ex: seuemail@email.com ou telefone" />
         <label style={labelStyle}>Nome do recebedor (opcional)</label>
         <Input value={recebedor} onChange={(e) => setRecebedor(e.target.value)} placeholder="ex: Weigler" />
-        <label style={labelStyle}>Seu WhatsApp (usado na vitrine pública, pra reservas)</label>
+        <label style={labelStyle}>Seu WhatsApp (contato geral — reservas e fila já não usam mais isso)</label>
         <Input value={whatsappContato} onChange={(e) => setWhatsappContato(e.target.value)} placeholder="(11) 91234-5678" />
         <Button style={{ alignSelf: "flex-start" }} onClick={salvarGeral}>
           Salvar
         </Button>
+      </div>
+
+      <div
+        style={{
+          background: COLORS.card,
+          border: `1.5px solid ${COLORS.rule}`,
+          borderRadius: 10,
+          padding: 16,
+          marginTop: 16,
+          display: "flex",
+          flexDirection: "column",
+          gap: 10,
+        }}
+      >
+        <div style={{ fontFamily: "'Playfair Display', serif", fontWeight: 700, fontSize: 16 }}>
+          Notificações do navegador
+        </div>
+        <div style={{ fontSize: 12, color: COLORS.inkSoft }}>
+          Avisa nesse navegador, na hora, quando chegar um pedido novo de fila ou reserva pela vitrine pública — só funciona enquanto essa aba estiver aberta.
+        </div>
+        {notifPermitida ? (
+          <div style={{ fontSize: 13, color: COLORS.sage }}>✓ Notificações ativadas</div>
+        ) : (
+          <Button style={{ alignSelf: "flex-start" }} onClick={onPedirPermissaoNotificacao}>
+            Ativar notificações
+          </Button>
+        )}
       </div>
 
       <div

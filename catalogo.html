@@ -336,10 +336,6 @@ function escapeHtml(s) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
 }
-function linkReserva(livro) {
-  const texto = `Oi! Vi no catálogo do ${bibliotecaNome} que o livro "${livro.titulo}" está disponível. Posso reservar?`;
-  return `https://wa.me/${normalizaTelefone(whatsappContato)}?text=${encodeURIComponent(texto)}`;
-}
 function toggleFilaForm(livroId) {
   const el = document.getElementById(`fila-form-${livroId}`);
   if (!el) return;
@@ -350,7 +346,7 @@ function toggleSemCodigo(livroId) {
   if (!el) return;
   el.style.display = el.style.display === "none" ? "flex" : "none";
 }
-async function enviarPedidoFila(livroId) {
+async function enviarPedido(livroId, tipo) {
   const livro = todosLivros.find((l) => l.id === livroId);
   if (!livro) return;
   const campoCodigo = document.getElementById(`fila-codigo-${livroId}`);
@@ -373,6 +369,7 @@ async function enviarPedidoFila(livroId) {
     const db = firebase.firestore();
     await db.collection("sifriyah_pedidos_fila").add({
       biblioteca: DOC_ID,
+      tipo,
       livroId,
       tituloLivro: livro.titulo,
       codigoUsuario: codigo || null,
@@ -383,7 +380,10 @@ async function enviarPedidoFila(livroId) {
       atendido: false,
     });
     msg.style.color = "#4B6B4A";
-    msg.textContent = "Pedido enviado! Você entra na fila assim que a biblioteca confirmar.";
+    msg.textContent =
+      tipo === "reserva"
+        ? "Reserva enviada! A biblioteca confirma com você em breve."
+        : "Pedido enviado! Você entra na fila assim que a biblioteca confirmar.";
     campoCodigo.value = "";
     campoNome.value = "";
     campoSobrenome.value = "";
@@ -440,16 +440,11 @@ function render() {
       const statusHtml = l.disponivel
         ? `<div class="status disponivel">● disponível agora</div>`
         : `<div class="status emprestado">● emprestado${l.proximaData ? " · previsão de volta em " + fmtDate(l.proximaData) : ""}</div>`;
-      let botao = "";
-      if (l.disponivel) {
-        if (whatsappContato) {
-          botao = `<a class="btn" href="${linkReserva(l)}" target="_blank" rel="noreferrer">💬 Reservar</a>`;
-        }
-      } else {
-        botao = `<button type="button" class="btn" style="background:#B8933E" onclick="toggleFilaForm('${l.id}')">⏳ Entrar na fila</button>`;
-      }
-      const filaFormHtml = !l.disponivel
-        ? `
+      const tipoPedido = l.disponivel ? "reserva" : "fila";
+      const botao = l.disponivel
+        ? `<button type="button" class="btn" onclick="toggleFilaForm('${l.id}')">💬 Reservar</button>`
+        : `<button type="button" class="btn" style="background:#B8933E" onclick="toggleFilaForm('${l.id}')">⏳ Entrar na fila</button>`;
+      const filaFormHtml = `
         <div class="fila-form" id="fila-form-${l.id}" style="display:none;">
           <input type="text" id="fila-codigo-${l.id}" placeholder="Código de usuário (se já tiver)" maxlength="10">
           <div class="fila-sem-codigo-toggle"><button type="button" onclick="toggleSemCodigo('${l.id}')">ainda não tenho código</button></div>
@@ -458,10 +453,11 @@ function render() {
             <input type="text" id="fila-sobrenome-${l.id}" placeholder="Sobrenome">
             <input type="text" id="fila-telefone-${l.id}" placeholder="Celular com DDD">
           </div>
-          <button type="button" class="btn" onclick="enviarPedidoFila('${l.id}')">Confirmar entrada na fila</button>
+          <button type="button" class="btn" onclick="enviarPedido('${l.id}', '${tipoPedido}')">${
+        l.disponivel ? "Confirmar reserva" : "Confirmar entrada na fila"
+      }</button>
           <div class="fila-msg" id="fila-msg-${l.id}"></div>
-        </div>`
-        : "";
+        </div>`;
       const capaHtml = l.capaUrl
         ? `<img class="capa" src="${l.capaUrl}" alt="">`
         : `<div class="capa-vazia">📕</div>`;
