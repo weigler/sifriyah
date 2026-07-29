@@ -158,7 +158,7 @@ Quando conectado a um projeto Firebase, cada seção é ouvida via `onSnapshot` 
 
 Dois tipos, guardados na coleção `sifriyah_backups`, cada um com as mesmas 4 seções criptografadas de novo (com a senha do momento):
 
-- **Automático**: disparado no máximo uma vez a cada 24h, checado a cada desbloqueio bem-sucedido do app (compara `Date.now()` contra o `criadoEm` do backup automático mais recente). Mantém no máximo `MAX_BACKUPS_AUTOMATICOS = 10` — ao ultrapassar, os mais antigos são apagados.
+- **Automático**: disparado no máximo uma vez a cada 24h, checado a cada desbloqueio bem-sucedido do app (compara `Date.now()` contra o `criadoEm` do backup automático mais recente). Mantém no máximo `config.maxBackupsAutomaticos` (padrão: `MAX_BACKUPS_AUTOMATICOS_PADRAO = 10`, editável em Ajustes) — ao ultrapassar, os mais antigos são apagados.
 - **Manual**: disparado pelo botão em Ajustes, sem limite de quantidade — ficam retidos indefinidamente, servindo como "pontos de restauração" que o próprio usuário decide manter.
 
 Restaurar (`restaurarBackup`) decifra as 4 seções do backup escolhido com a senha atual e substitui o estado em memória — os `useEffect` de autosave por seção então percebem a mudança e regravam tudo na nuvem sozinhos, sem passo manual adicional. Se a senha atual não bater com a que cifrou aquele backup (por exemplo, um backup de antes de uma troca de senha), a decodificação falha e isso é reportado na interface, em vez de falhar em silêncio.
