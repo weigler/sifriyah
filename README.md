@@ -94,8 +94,10 @@ O prazo sugerido é `hoje + limiteSemanas` (em semanas, `somarSemanas`).
 ```
 diasAtraso = max(0, hoje - prazo)          # só se não devolvido e há prazo
 semanasAtraso = ceil(diasAtraso / 7)
-multa = semanasAtraso × (valorSemanaExtra OU valorSemanal)
+valorSemana = config.valorMultaSemanal (se preenchido) OU valorSemanaExtra OU valorSemanal do livro
+multa = semanasAtraso × valorSemana
 ```
+`valorMultaSemanal` é um campo opcional em Ajustes — um valor único, geral, que substitui a taxa por livro quando preenchido. Se deixado em branco, cada livro usa sua própria taxa (`valorSemanaExtra`, com `valorSemanal` como último recurso).
 Se `emprestimo.multaAnulada === true`, a multa é sempre 0, independente do atraso — um botão "anular multa" / "reativar multa" alterna essa flag por empréstimo. Isso existe especificamente para cobrir o caso de o livro já ter sido devolvido na prática, mas o admin só ter marcado isso no sistema alguns dias depois: sem a anulação, o atraso "de sistema" geraria uma multa indevida.
 
 Por ser puramente derivada (não persistida), a multa nunca fica dessincronizada — junto com o pagamento, ela entra automaticamente em:
