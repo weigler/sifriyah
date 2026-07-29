@@ -91,12 +91,13 @@ function diasAtraso(emp) {
 // "renovar por mais uma semana", só que cobrada automaticamente quando ninguém renovou a tempo.
 // Pode ser anulada manualmente por empréstimo (emp.multaAnulada), pra cobrir esquecimentos de
 // marcar a devolução no sistema.
-function calcularMulta(emp, livro) {
+function calcularMulta(emp, livro, config) {
   if (!emp || emp.multaAnulada) return 0;
   const dias = diasAtraso(emp);
   if (dias <= 0) return 0;
   const semanas = Math.ceil(dias / 7);
-  const valorSemana = (livro && (livro.valorSemanaExtra || livro.valorSemanal)) || 0;
+  const valorSemana =
+    (config && config.valorMultaSemanal) || (livro && (livro.valorSemanaExtra || livro.valorSemanal)) || 0;
   return semanas * valorSemana;
 }
 
@@ -2114,6 +2115,7 @@ export default function App() {
             livroById={livroById}
             totalPago={totalPago}
             onRemoverCobranca={removerCobranca}
+            config={config}
           />
         )}
         {tab === "ajustes" && (
@@ -2200,7 +2202,7 @@ function EmprestimosTab({
   function pessoaTemDebito(pessoaId) {
     return emprestimos.some((e) => {
       if (e.pessoaId !== pessoaId) return false;
-      const multa = calcularMulta(e, livroById(e.livroId));
+      const multa = calcularMulta(e, livroById(e.livroId), config);
       return Math.max(0, (e.valorCombinado || 0) + multa - totalPago(e)) > 0;
     });
   }
@@ -2271,7 +2273,7 @@ function EmprestimosTab({
   }
 
   function mensagemCobranca(emp, livro, pessoa) {
-    const multa = calcularMulta(emp, livro);
+    const multa = calcularMulta(emp, livro, config);
     const restante = Math.max(0, (emp.valorCombinado || 0) + multa - totalPago(emp));
     const pixTexto = config.pix ? `Pix: ${config.pix}${config.recebedor ? " (" + config.recebedor + ")" : ""}.` : "";
     const modelo =
@@ -2519,7 +2521,7 @@ function EmprestimosTab({
             const pessoa = pessoaById(emp.pessoaId);
             const pago = totalPago(emp);
             const atraso = diasAtraso(emp);
-            const multa = calcularMulta(emp, livro);
+            const multa = calcularMulta(emp, livro, config);
             const restante = Math.max(0, (emp.valorCombinado || 0) + multa - pago);
             const diasRestantes = !emp.devolvido && emp.prazo ? Math.max(0, -daysBetween(emp.prazo)) : 0;
             const semanasNaoUsadas = Math.floor(diasRestantes / 7);
@@ -3903,8 +3905,8 @@ function FilaPedidosTab({ pedidosFila, livroById, onAceitar, onDescartar }) {
 }
 
 // ---------------- Financeiro ----------------
-function FinanceiroTab({ emprestimos, cobrancas, pessoaById, livroById, totalPago, onRemoverCobranca }) {
-  const totalMultas = emprestimos.reduce((s, e) => s + calcularMulta(e, livroById(e.livroId)), 0);
+function FinanceiroTab({ emprestimos, cobrancas, pessoaById, livroById, totalPago, onRemoverCobranca, config }) {
+  const totalMultas = emprestimos.reduce((s, e) => s + calcularMulta(e, livroById(e.livroId), config), 0);
   const totalCombinado = emprestimos.reduce((s, e) => s + (e.valorCombinado || 0), 0) + totalMultas;
   const totalRecebido = emprestimos.reduce((s, e) => s + totalPago(e), 0);
   const totalPendente = Math.max(0, totalCombinado - totalRecebido);
@@ -4146,6 +4148,7 @@ function AjustesTab({
   const [pix, setPix] = useState(config.pix || "");
   const [recebedor, setRecebedor] = useState(config.recebedor || "");
   const [whatsappContato, setWhatsappContato] = useState(config.whatsappContato || "");
+  const [valorMultaSemanal, setValorMultaSemanal] = useState(config.valorMultaSemanal || "");
   const [linkVitrine, setLinkVitrine] = useState(config.linkVitrine || "");
   const [promoAtiva, setPromoAtiva] = useState(config.promocao?.ativa || false);
   const [promoDescricao, setPromoDescricao] = useState(config.promocao?.descricao || "");
@@ -4252,6 +4255,7 @@ function AjustesTab({
       recebedor,
       whatsappContato,
       linkVitrine,
+      valorMultaSemanal: valorMultaSemanal ? parseFloat(valorMultaSemanal) : 0,
       promocao: {
         ativa: promoAtiva,
         descricao: promoDescricao,
@@ -4313,6 +4317,14 @@ function AjustesTab({
         <Input value={recebedor} onChange={(e) => setRecebedor(e.target.value)} placeholder="ex: Weigler" />
         <label style={labelStyle}>Seu WhatsApp (contato geral — reservas e fila já não usam mais isso)</label>
         <Input value={whatsappContato} onChange={(e) => setWhatsappContato(e.target.value)} placeholder="(11) 91234-5678" />
+        <label style={labelStyle}>Valor da multa por semana de atraso (opcional)</label>
+        <Input
+          type="number"
+          step="0.01"
+          value={valorMultaSemanal}
+          onChange={(e) => setValorMultaSemanal(e.target.value)}
+          placeholder="deixe em branco pra usar o valor da semana extra de cada livro"
+        />
         <Button style={{ alignSelf: "flex-start" }} onClick={salvarGeral}>
           Salvar
         </Button>
