@@ -2313,6 +2313,7 @@ function EmprestimosTab({
     .filter((e) => {
       if (filtro === "ativos") return !e.devolvido;
       if (filtro === "devolvidos") return e.devolvido;
+      if (filtro === "atrasados") return !e.devolvido && statusOf(e) === "atrasado";
       return true;
     })
     .sort((a, b) => {
@@ -2328,6 +2329,7 @@ function EmprestimosTab({
       <Section eyebrow="Registro de saída" title="Empréstimos ativos">
         {qtdAtrasados > 0 && (
           <div
+            onClick={() => setFiltro("atrasados")}
             style={{
               background: "#F7E3DA",
               border: `1.5px solid ${COLORS.rust}`,
@@ -2337,13 +2339,14 @@ function EmprestimosTab({
               fontSize: 13,
               color: COLORS.rust,
               fontWeight: 600,
+              cursor: "pointer",
             }}
           >
-            ⚠️ {qtdAtrasados} empréstimo(s) atrasado(s) — aparecem primeiro na lista abaixo.
+            ⚠️ {qtdAtrasados} empréstimo(s) atrasado(s) — clique pra filtrar só eles.
           </div>
         )}
         <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
-          {["ativos", "devolvidos", "todos"].map((f) => (
+          {["ativos", "atrasados", "devolvidos", "todos"].map((f) => (
             <button
               key={f}
               onClick={() => setFiltro(f)}
