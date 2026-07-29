@@ -1,0 +1,8 @@
+{
+  "name": "sifriyah-notificacoes",
+  "private": true,
+  "description": "Script rodado pelo GitHub Actions pra avisar no Telegram quando chega pedido de fila/reserva.",
+  "dependencies": {
+    "firebase-admin": "^12.0.0"
+  }
+}
