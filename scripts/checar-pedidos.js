@@ -64,21 +64,26 @@ async function main() {
     .collection("sifriyah_pedidos_fila")
     .where("biblioteca", "==", DOC_ID)
     .where("atendido", "==", false)
-    .where("criadoEm", ">", ultimoAvisoEm)
-    .orderBy("criadoEm", "asc")
     .get();
 
-  if (snap.empty) {
+  // filtra e ordena aqui em vez de na query — assim não precisa de um índice composto no
+  // Firestore (que exigiria um passo manual extra pra cada biblioteca replicada). A lista de
+  // pedidos pendentes é sempre pequena, então filtrar do lado do script é barato.
+  const novos = snap.docs
+    .map((doc) => ({ id: doc.id, ...doc.data() }))
+    .filter((pf) => (pf.criadoEm || 0) > ultimoAvisoEm)
+    .sort((a, b) => (a.criadoEm || 0) - (b.criadoEm || 0));
+
+  if (novos.length === 0) {
     console.log("Nenhum pedido novo.");
     return;
   }
 
   let maiorCriadoEm = ultimoAvisoEm;
-  for (const doc of snap.docs) {
-    const pf = doc.data();
+  for (const pf of novos) {
     maiorCriadoEm = Math.max(maiorCriadoEm, pf.criadoEm || 0);
     await enviarTelegram(montarMensagem(pf));
-    console.log(`Avisado: ${doc.id}`);
+    console.log(`Avisado: ${pf.id}`);
   }
 
   await estadoRef.set({ ultimoAvisoEm: maiorCriadoEm }, { merge: true });
