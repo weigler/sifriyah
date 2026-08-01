@@ -79,7 +79,14 @@ function gerarCodigoUsuario(existentes) {
 }
 
 function todayISO() {
-  return new Date().toISOString().slice(0, 10);
+  // não usa toISOString() aqui de propósito: ela sempre devolve a data em UTC, então à noite
+  // no Brasil (UTC-3) já mostraria o dia seguinte. getFullYear/getMonth/getDate usam o fuso
+  // horário local do navegador, que é o que a gente realmente quer.
+  const d = new Date();
+  const ano = d.getFullYear();
+  const mes = String(d.getMonth() + 1).padStart(2, "0");
+  const dia = String(d.getDate()).padStart(2, "0");
+  return `${ano}-${mes}-${dia}`;
 }
 
 function fmtDate(iso) {
@@ -2318,31 +2325,44 @@ function EmprestimosTab({
       nome: pessoa ? pessoa.nome : "",
       livro: livro ? livro.titulo : "",
       valor: fmtMoney(restante),
+      prazo: fmtDate(emp.prazo),
+      dataInicio: fmtDate(emp.dataEmprestimo),
+      dataFim: fmtDate(emp.prazo),
       pix: pixTexto,
     });
   }
 
   function mensagemRenovacao(emp, livro, pessoa) {
+    const multa = calcularMulta(emp, livro, config);
+    const restante = Math.max(0, (emp.valorCombinado || 0) + multa - totalPago(emp));
+    const pixTexto = config.pix ? `Pix: ${config.pix}${config.recebedor ? " (" + config.recebedor + ")" : ""}.` : "";
     const modelo =
       config.modeloRenovacao ||
       `Oi {nome}! 👋 Só passando pra saber sobre o livro "{livro}" — o prazo era {prazo}. Você já terminou ou quer renovar por mais um tempo? Me avisa 🙂`;
     return preencherModelo(modelo, {
       nome: pessoa ? pessoa.nome : "",
       livro: livro ? livro.titulo : "",
+      valor: fmtMoney(restante),
       prazo: fmtDate(emp.prazo),
+      dataInicio: fmtDate(emp.dataEmprestimo),
+      dataFim: fmtDate(emp.prazo),
+      pix: pixTexto,
     });
   }
 
   function mensagemConfirmacao(emp, livro, pessoa) {
+    const pixTexto = config.pix ? `Pix: ${config.pix}${config.recebedor ? " (" + config.recebedor + ")" : ""}.` : "";
     const modelo =
       config.modeloConfirmacao ||
       `Oi {nome}! 👋 Seu empréstimo do livro "{livro}" foi confirmado! Início: {dataInicio}. Devolução prevista: {dataFim}. Valor combinado: {valor}. Qualquer dúvida é só chamar 📚`;
     return preencherModelo(modelo, {
       nome: pessoa ? pessoa.nome : "",
       livro: livro ? livro.titulo : "",
+      valor: fmtMoney(emp.valorCombinado || 0),
+      prazo: fmtDate(emp.prazo),
       dataInicio: fmtDate(emp.dataEmprestimo),
       dataFim: fmtDate(emp.prazo),
-      valor: fmtMoney(emp.valorCombinado || 0),
+      pix: pixTexto,
     });
   }
 
@@ -4418,9 +4438,12 @@ function AjustesTab({
           Textos das mensagens
         </div>
         <div style={{ fontSize: 12, color: COLORS.inkSoft }}>
-          Use <code>{"{nome}"}</code>, <code>{"{livro}"}</code>, <code>{"{valor}"}</code>, <code>{"{prazo}"}</code>,{" "}
-          <code>{"{dataInicio}"}</code>, <code>{"{dataFim}"}</code> e <code>{"{pix}"}</code> — eles são trocados
-          automaticamente na hora de enviar.
+          Use <code>{"{nome}"}</code>, <code>{"{livro}"}</code>, <code>{"{prazo}"}</code>,{" "}
+          <code>{"{dataInicio}"}</code>, <code>{"{dataFim}"}</code>, <code>{"{valor}"}</code> e{" "}
+          <code>{"{pix}"}</code> — funcionam nos três textos abaixo, trocados automaticamente na hora de
+          enviar. <code>{"{prazo}"}</code> e <code>{"{dataFim}"}</code> são a mesma data (a de devolução).{" "}
+          <code>{"{valor}"}</code> muda de sentido conforme a mensagem: quanto ainda falta pagar na cobrança
+          e no lembrete, e o valor combinado do empréstimo na confirmação.
         </div>
         <label style={labelStyle}>Mensagem de confirmação de empréstimo</label>
         <textarea
