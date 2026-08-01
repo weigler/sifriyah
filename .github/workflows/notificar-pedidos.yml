@@ -2,9 +2,9 @@ name: Notificar pedidos de fila/reserva
 
 on:
   schedule:
-    # a cada 10 minutos — o GitHub costuma atrasar um pouco esse gatilho em horários de
+    # a cada 120 minutos — o GitHub costuma atrasar um pouco esse gatilho em horários de
     # pico, então na prática o aviso pode demorar alguns minutos a mais
-    - cron: "*/10 * * * *"
+    - cron: "*/120 * * * *"
   workflow_dispatch: {} # permite rodar manualmente pela aba Actions, pra testar
 
 jobs:
