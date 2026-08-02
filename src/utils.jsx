@@ -1,4 +1,17 @@
-import React, { useState, useEffect, useMemo, useRef } from "react";
+const { useState, useEffect, useMemo, useRef } = React;
+
+// polyfill de armazenamento local (usado como fallback quando não há nuvem conectada, e para
+// guardar a lista de backups feitos localmente)
+window.storage = {
+  async get(key) {
+    const v = localStorage.getItem(key);
+    return v !== null ? { key, value: v, shared: false } : null;
+  },
+  async set(key, value) {
+    localStorage.setItem(key, value);
+    return { key, value, shared: false };
+  },
+};
 
 // ---- Fontes ----
 function useFonts() {
