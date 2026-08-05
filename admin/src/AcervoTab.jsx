@@ -81,6 +81,7 @@ function AcervoTab({
   const [valorSemanal, setValorSemanal] = useState("");
   const [valorSemanaExtra, setValorSemanaExtra] = useState("");
   const [valorReposicao, setValorReposicao] = useState("");
+  const [valorAquisicao, setValorAquisicao] = useState("");
   const [limiteSemanas, setLimiteSemanas] = useState("");
   const [quantidade, setQuantidade] = useState("1");
   const [categoria, setCategoria] = useState("");
@@ -99,6 +100,7 @@ function AcervoTab({
   const [editValorSemanal, setEditValorSemanal] = useState("");
   const [editValorSemanaExtra, setEditValorSemanaExtra] = useState("");
   const [editValorReposicao, setEditValorReposicao] = useState("");
+  const [editValorAquisicao, setEditValorAquisicao] = useState("");
   const [editLimiteSemanas, setEditLimiteSemanas] = useState("");
   const [editQuantidade, setEditQuantidade] = useState("1");
   const [editCategoria, setEditCategoria] = useState("");
@@ -162,6 +164,7 @@ function AcervoTab({
     setEditValorSemanal(l.valorSemanal || "");
     setEditValorSemanaExtra(l.valorSemanaExtra || "");
     setEditValorReposicao(l.valorReposicao || "");
+    setEditValorAquisicao(l.valorAquisicao || "");
     setEditLimiteSemanas(l.limiteSemanas || "");
     setEditQuantidade(String(l.quantidade || 1));
     setEditCategoria(l.categoria || "");
@@ -180,6 +183,7 @@ function AcervoTab({
       valorSemanal: editValorSemanal,
       valorSemanaExtra: editValorSemanaExtra,
       valorReposicao: editValorReposicao,
+      valorAquisicao: editValorAquisicao,
       limiteSemanas: editLimiteSemanas,
       quantidade: editQuantidade,
       categoria: editCategoria,
@@ -213,10 +217,19 @@ function AcervoTab({
         {/* 2 — Autor (obrigatório) */}
         <Input placeholder="Autor" value={autor} onChange={(e) => setAutor(e.target.value)} />
 
-        {/* 3 — Dia de aquisição / Páginas / Unidades */}
+        {/* 3 — Dia de aquisição / Valor investido / Páginas / Unidades */}
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <CampoCol label="Dia de aquisição">
             <Input type="date" value={dataAquisicao} onChange={(e) => setDataAquisicao(e.target.value)} />
+          </CampoCol>
+          <CampoCol label="Valor investido">
+            <Input
+              type="number"
+              step="0.01"
+              placeholder="0,00 se doado/emprestado"
+              value={valorAquisicao}
+              onChange={(e) => setValorAquisicao(e.target.value)}
+            />
           </CampoCol>
           <CampoCol label="Páginas">
             <Input type="number" placeholder="Páginas" value={paginas} onChange={(e) => setPaginas(e.target.value)} />
@@ -366,6 +379,7 @@ function AcervoTab({
               valorSemanal,
               valorSemanaExtra,
               valorReposicao,
+              valorAquisicao,
               limiteSemanas,
               quantidade,
               categoria,
@@ -382,6 +396,7 @@ function AcervoTab({
             setValorSemanal("");
             setValorSemanaExtra("");
             setValorReposicao("");
+            setValorAquisicao("");
             setLimiteSemanas("");
             setQuantidade("1");
             setCategoria("");
@@ -421,6 +436,15 @@ function AcervoTab({
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                     <CampoCol label="Dia de aquisição">
                       <Input type="date" value={editData} onChange={(e) => setEditData(e.target.value)} />
+                    </CampoCol>
+                    <CampoCol label="Valor investido">
+                      <Input
+                        type="number"
+                        step="0.01"
+                        placeholder="0,00 se doado/emprestado"
+                        value={editValorAquisicao}
+                        onChange={(e) => setEditValorAquisicao(e.target.value)}
+                      />
                     </CampoCol>
                     <CampoCol label="Páginas">
                       <Input type="number" value={editPaginas} onChange={(e) => setEditPaginas(e.target.value)} placeholder="Páginas" />
@@ -567,6 +591,8 @@ function AcervoTab({
                       {l.paginas ? `${l.paginas} páginas` : ""}
                       {l.paginas && l.dataAquisicao ? " · " : ""}
                       {l.dataAquisicao ? `adquirido em ${fmtDate(l.dataAquisicao)}` : ""}
+                      {(l.paginas || l.dataAquisicao) && l.valorAquisicao > 0 ? " · " : ""}
+                      {l.valorAquisicao > 0 ? `investido: ${fmtMoney(l.valorAquisicao)}` : ""}
                     </div>
                     <div style={{ fontSize: 11.5, color: COLORS.gold, fontFamily: "'JetBrains Mono', monospace", marginTop: 2 }}>
                       {l.categoria ? `${l.categoria}` : ""}

@@ -61,7 +61,7 @@ FUNCIONALIDADES.md             → documentação funcional completa (modelo de 
                                   — era o conteúdo antigo do README.md, movido pra cá
 firestore.rules                → regras do Firestore versionadas no repo (antes só existiam no Console);
                                   copiar daqui pro Console sempre que mudar
-.github/workflows/notificar-pedidos.yml   → GitHub Action, roda a cada 6 horas
+.github/workflows/notificar-pedidos.yml   → GitHub Action, roda a cada 3 horas
 scripts/checar-pedidos.js + package.json  → notifica pedidos novos de fila/reserva no Telegram
 ```
 
@@ -104,7 +104,7 @@ Regras publicadas hoje no Firestore Console — copiar de lá se precisar confer
 
 ## Notificação via Telegram (bot)
 
-Roda fora do app, via GitHub Actions (`scripts/checar-pedidos.js`, agendado a cada 6 horas — o workflow em si é a fonte da verdade, conferir `.github/workflows/notificar-pedidos.yml` se mudar). Decifra a seção `pessoas` (usando a senha local do app, guardada como Secret) pra resolver código de usuário → nome/telefone reais na mensagem. Segredos necessários no GitHub (Settings → Secrets and variables → Actions):
+Roda fora do app, via GitHub Actions (`scripts/checar-pedidos.js`, agendado a cada 3 horas — o workflow em si é a fonte da verdade, conferir `.github/workflows/notificar-pedidos.yml` se mudar). Avisa sobre os três tipos de pedido da coleção `sifriyah_pedidos_fila` (fila, reserva e sugestão de livro) — não filtra por tipo, então qualquer novo tipo que vier a existir já é avisado automaticamente sem precisar mexer no script. Decifra a seção `pessoas` (usando a senha local do app, guardada como Secret) pra resolver código de usuário → nome/telefone reais na mensagem. Segredos necessários no GitHub (Settings → Secrets and variables → Actions):
 - `FIREBASE_SERVICE_ACCOUNT` (JSON da chave de serviço — acesso total, ignora regras)
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_CHAT_ID`

@@ -1,9 +1,9 @@
 // scripts/checar-pedidos.js
 //
 // Roda periodicamente via GitHub Actions (veja .github/workflows/notificar-pedidos.yml).
-// Verifica se existem pedidos novos (fila ou reserva) em "sifriyah_pedidos_fila" que ainda
-// não foram avisados, resolve o código de usuário pro nome/telefone reais, e manda uma
-// mensagem no Telegram pra cada um. Usa a Firebase Admin SDK (chave de serviço), que ignora
+// Verifica se existem pedidos novos (fila, reserva ou sugestão de livro) em
+// "sifriyah_pedidos_fila" que ainda não foram avisados, resolve o código de usuário pro
+// nome/telefone reais, e manda uma mensagem no Telegram pra cada um. Usa a Firebase Admin SDK (chave de serviço), que ignora
 // as regras de segurança do Firestore — por isso não precisa de nenhuma mudança nas regras
 // pra isso funcionar.
 //
@@ -89,6 +89,20 @@ async function enviarTelegram(texto) {
 }
 
 function montarMensagem(pf, pessoasPorCodigo) {
+  if (pf.tipo === "sugestao") {
+    const livro = pf.tituloLivro || "(sem título)";
+    const autor = pf.autorSugerido ? ` — ${pf.autorSugerido}` : "";
+    const editora = pf.editoraSugerida ? ` (${pf.editoraSugerida})` : "";
+    let quem = "";
+    if (pf.codigoUsuario) {
+      const pessoa = pessoasPorCodigo ? pessoasPorCodigo.get(pf.codigoUsuario.toUpperCase()) : null;
+      quem = pessoa ? [pessoa.nome, pessoa.sobrenome].filter(Boolean).join(" ") : `código ${pf.codigoUsuario}`;
+    } else if (pf.nome) {
+      quem = [pf.nome, pf.sobrenome].filter(Boolean).join(" ");
+    }
+    return `📚 Nova sugestão de livro\n${livro}${autor}${editora}${quem ? `\nsugerido por ${quem}` : ""}`;
+  }
+
   const tipo = pf.tipo === "reserva" ? "📖 Nova reserva" : "⏳ Novo pedido de fila";
   const livro = pf.tituloLivro || "(livro)";
 

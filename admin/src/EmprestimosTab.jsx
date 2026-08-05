@@ -122,10 +122,9 @@ function EmprestimosTab({
   function mensagemCobranca(emp, livro, pessoa) {
     const multa = calcularMulta(emp, livro, config);
     const restante = Math.max(0, (emp.valorCombinado || 0) + multa - totalPago(emp));
-    const pixTexto = config.pix ? `Pix: ${config.pix}${config.recebedor ? " (" + config.recebedor + ")" : ""}.` : "";
     const modelo =
       config.modeloCobranca ||
-      `Oi {nome}! 👋 Passando pra lembrar sobre o livro "{livro}" que te emprestei — falta {valor} do combinado. {pix} Qualquer coisa me chama! 🙏`;
+      `Oi {nome}! 👋 Passando pra lembrar sobre o livro "{livro}" que te emprestei — falta {valor} do combinado. Pix: {pix} ({pixnome}). Qualquer coisa me chama! 🙏`;
     return preencherModelo(modelo, {
       nome: pessoa ? pessoa.nome : "",
       livro: livro ? livro.titulo : "",
@@ -133,14 +132,14 @@ function EmprestimosTab({
       prazo: fmtDate(emp.prazo),
       dataInicio: fmtDate(emp.dataEmprestimo),
       dataFim: fmtDate(emp.prazo),
-      pix: pixTexto,
+      pix: config.pix || "",
+      pixnome: config.recebedor || "",
     });
   }
 
   function mensagemRenovacao(emp, livro, pessoa) {
     const multa = calcularMulta(emp, livro, config);
     const restante = Math.max(0, (emp.valorCombinado || 0) + multa - totalPago(emp));
-    const pixTexto = config.pix ? `Pix: ${config.pix}${config.recebedor ? " (" + config.recebedor + ")" : ""}.` : "";
     const modelo =
       config.modeloRenovacao ||
       `Oi {nome}! 👋 Só passando pra saber sobre o livro "{livro}" — o prazo era {prazo}. Você já terminou ou quer renovar por mais um tempo? Me avisa 🙂`;
@@ -151,12 +150,12 @@ function EmprestimosTab({
       prazo: fmtDate(emp.prazo),
       dataInicio: fmtDate(emp.dataEmprestimo),
       dataFim: fmtDate(emp.prazo),
-      pix: pixTexto,
+      pix: config.pix || "",
+      pixnome: config.recebedor || "",
     });
   }
 
   function mensagemConfirmacao(emp, livro, pessoa) {
-    const pixTexto = config.pix ? `Pix: ${config.pix}${config.recebedor ? " (" + config.recebedor + ")" : ""}.` : "";
     const modelo =
       config.modeloConfirmacao ||
       `Oi {nome}! 👋 Seu empréstimo do livro "{livro}" foi confirmado! Início: {dataInicio}. Devolução prevista: {dataFim}. Valor combinado: {valor}. Qualquer dúvida é só chamar 📚`;
@@ -167,7 +166,8 @@ function EmprestimosTab({
       prazo: fmtDate(emp.prazo),
       dataInicio: fmtDate(emp.dataEmprestimo),
       dataFim: fmtDate(emp.prazo),
-      pix: pixTexto,
+      pix: config.pix || "",
+      pixnome: config.recebedor || "",
     });
   }
 
@@ -182,7 +182,8 @@ function EmprestimosTab({
       prazo: fmtDate(emp.prazo),
       dataInicio: fmtDate(emp.dataEmprestimo),
       dataFim: fmtDate(emp.prazo),
-      pix: "",
+      pix: config.pix || "",
+      pixnome: config.recebedor || "",
     });
   }
 
@@ -191,6 +192,10 @@ function EmprestimosTab({
       if (filtro === "ativos") return !e.devolvido;
       if (filtro === "devolvidos") return e.devolvido;
       if (filtro === "atrasados") return !e.devolvido && statusOf(e) === "atrasado";
+      if (filtro === "vencendo") {
+        const dias = diasParaVencer(e);
+        return dias !== null && dias >= 0 && dias <= diasAvisoVencimento;
+      }
       if (filtro === "devedores") {
         const multa = calcularMulta(e, livroById(e.livroId), config);
         return Math.max(0, (e.valorCombinado || 0) + multa - totalPago(e)) > 0;
@@ -203,12 +208,20 @@ function EmprestimosTab({
         const restanteB = Math.max(0, (b.valorCombinado || 0) + calcularMulta(b, livroById(b.livroId), config) - totalPago(b));
         return restanteB - restanteA;
       }
+      if (filtro === "vencendo") {
+        return (diasParaVencer(a) ?? 999) - (diasParaVencer(b) ?? 999);
+      }
       const pa = statusOf(a) === "atrasado" ? 0 : 1;
       const pb = statusOf(b) === "atrasado" ? 0 : 1;
       return pa - pb;
     });
 
+  const diasAvisoVencimento = config.diasAvisoVencimento || 2;
   const qtdAtrasados = emprestimos.filter((e) => !e.devolvido && statusOf(e) === "atrasado").length;
+  const qtdVencendo = emprestimos.filter((e) => {
+    const dias = diasParaVencer(e);
+    return dias !== null && dias >= 0 && dias <= diasAvisoVencimento;
+  }).length;
 
   // débito de cada empréstimo, indiferente de já devolvido ou não — quem devolveu o livro mas
   // ainda deve fica igual de visível aqui quanto quem está com o livro em mãos
@@ -256,8 +269,26 @@ function EmprestimosTab({
             💰 {qtdDevedores} pessoa(s) devendo, total de {fmtMoney(totalDevido)} — clique pra ver só quem deve.
           </div>
         )}
+        {qtdVencendo > 0 && (
+          <div
+            onClick={() => setFiltro("vencendo")}
+            style={{
+              background: "#FBF3DC",
+              border: `1.5px solid ${COLORS.gold}`,
+              borderRadius: 8,
+              padding: "10px 14px",
+              marginBottom: 14,
+              fontSize: 13,
+              color: "#8A6A1F",
+              fontWeight: 600,
+              cursor: "pointer",
+            }}
+          >
+            🔔 {qtdVencendo} empréstimo(s) vencendo em até {diasAvisoVencimento} dia{diasAvisoVencimento === 1 ? "" : "s"} — clique pra ver.
+          </div>
+        )}
         <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
-          {["ativos", "atrasados", "devedores", "devolvidos", "todos"].map((f) => (
+          {["ativos", "vencendo", "atrasados", "devedores", "devolvidos", "todos"].map((f) => (
             <button
               key={f}
               onClick={() => setFiltro(f)}
@@ -488,6 +519,12 @@ function EmprestimosTab({
                       >
                         {emp.multaAnulada ? "reativar multa" : "anular multa"}
                       </button>
+                    </div>
+                  )}
+
+                  {atraso === 0 && !emp.devolvido && emp.prazo && diasRestantes <= diasAvisoVencimento && (
+                    <div style={{ fontSize: 12.5, color: "#8A6A1F", marginBottom: 6 }}>
+                      🔔 {diasRestantes === 0 ? "vence hoje" : `vence em ${diasRestantes} dia${diasRestantes === 1 ? "" : "s"}`}
                     </div>
                   )}
 

@@ -39,6 +39,8 @@ function AjustesTab({
   const [recebedor, setRecebedor] = useState(config.recebedor || "");
   const [whatsappContato, setWhatsappContato] = useState(config.whatsappContato || "");
   const [valorMultaSemanal, setValorMultaSemanal] = useState(config.valorMultaSemanal || "");
+  const [tetoMulta, setTetoMulta] = useState(config.tetoMulta || "");
+  const [diasAvisoVencimento, setDiasAvisoVencimento] = useState(config.diasAvisoVencimento || "");
   const [maxBackupsAutomaticos, setMaxBackupsAutomaticos] = useState(config.maxBackupsAutomaticos || "");
   const [diasExpiracaoReserva, setDiasExpiracaoReserva] = useState(config.diasExpiracaoReserva || "");
   const [linkVitrine, setLinkVitrine] = useState(config.linkVitrine || "");
@@ -47,7 +49,7 @@ function AjustesTab({
   const [promoValidoAte, setPromoValidoAte] = useState(config.promocao?.validoAte || "");
   const [promoDesconto, setPromoDesconto] = useState(config.promocao?.desconto || "");
   const MODELO_COBRANCA_PADRAO =
-    'Oi {nome}! 👋 Passando pra lembrar sobre o livro "{livro}" que te emprestei — falta {valor} do combinado. {pix} Qualquer coisa me chama! 🙏';
+    'Oi {nome}! 👋 Passando pra lembrar sobre o livro "{livro}" que te emprestei — falta {valor} do combinado. Pix: {pix} ({pixnome}). Qualquer coisa me chama! 🙏';
   const MODELO_RENOVACAO_PADRAO =
     'Oi {nome}! 👋 Só passando pra saber sobre o livro "{livro}" — o prazo era {prazo}. Você já terminou ou quer renovar por mais um tempo? Me avisa 🙂';
   const MODELO_CONFIRMACAO_PADRAO =
@@ -152,6 +154,8 @@ function AjustesTab({
       whatsappContato,
       linkVitrine,
       valorMultaSemanal: valorMultaSemanal ? parseFloat(valorMultaSemanal) : 0,
+      tetoMulta: tetoMulta ? parseFloat(tetoMulta) : 0,
+      diasAvisoVencimento: diasAvisoVencimento ? parseInt(diasAvisoVencimento, 10) : 0,
       maxBackupsAutomaticos: maxBackupsAutomaticos ? parseInt(maxBackupsAutomaticos, 10) : 0,
       diasExpiracaoReserva: diasExpiracaoReserva ? parseInt(diasExpiracaoReserva, 10) : 0,
       promocao: {
@@ -170,11 +174,11 @@ function AjustesTab({
   function exportarAcervoCSV() {
     const cabecalho = [
       "Título", "Autor", "Categoria", "Nível", "Unidades", "Valor semanal",
-      "Valor semana extra", "Custo de reposição", "Páginas", "Adquirido em",
+      "Valor semana extra", "Custo de reposição", "Valor investido (aquisição)", "Páginas", "Adquirido em",
     ];
     const linhas = (livros || []).map((l) => [
       l.titulo, l.autor || "", l.categoria || "", l.nivel || "", l.quantidade || 1,
-      l.valorSemanal || "", l.valorSemanaExtra || "", l.valorReposicao || "", l.paginas || "", l.dataAquisicao || "",
+      l.valorSemanal || "", l.valorSemanaExtra || "", l.valorReposicao || "", l.valorAquisicao || "", l.paginas || "", l.dataAquisicao || "",
     ]);
     baixarCSV(`sifriyah-acervo-${todayISO()}.csv`, cabecalho, linhas);
   }
@@ -265,6 +269,23 @@ function AjustesTab({
           onChange={(e) => setValorMultaSemanal(e.target.value)}
           placeholder="deixe em branco pra usar o valor da semana extra de cada livro"
         />
+        <label style={labelStyle}>Teto de multa por empréstimo (R$, opcional)</label>
+        <Input
+          type="number"
+          step="0.01"
+          min="0"
+          value={tetoMulta}
+          onChange={(e) => setTetoMulta(e.target.value)}
+          placeholder="deixe em branco pra não limitar"
+        />
+        <label style={labelStyle}>Avisar vencimento com quantos dias de antecedência (padrão: 2)</label>
+        <Input
+          type="number"
+          min="0"
+          value={diasAvisoVencimento}
+          onChange={(e) => setDiasAvisoVencimento(e.target.value)}
+          placeholder="2"
+        />
         <label style={labelStyle}>Quantos backups automáticos guardar (padrão: 10)</label>
         <Input
           type="number"
@@ -330,11 +351,15 @@ function AjustesTab({
         </div>
         <div style={{ fontSize: 12, color: COLORS.inkSoft }}>
           Use <code>{"{nome}"}</code>, <code>{"{livro}"}</code>, <code>{"{prazo}"}</code>,{" "}
-          <code>{"{dataInicio}"}</code>, <code>{"{dataFim}"}</code>, <code>{"{valor}"}</code> e{" "}
-          <code>{"{pix}"}</code> — funcionam nos três textos abaixo, trocados automaticamente na hora de
-          enviar. <code>{"{prazo}"}</code> e <code>{"{dataFim}"}</code> são a mesma data (a de devolução).{" "}
-          <code>{"{valor}"}</code> muda de sentido conforme a mensagem: quanto ainda falta pagar na cobrança
-          e no lembrete, e o valor combinado do empréstimo na confirmação.
+          <code>{"{dataInicio}"}</code>, <code>{"{dataFim}"}</code>, <code>{"{valor}"}</code>,{" "}
+          <code>{"{pix}"}</code> e <code>{"{pixnome}"}</code> — funcionam nos quatro textos abaixo,
+          trocados automaticamente na hora de enviar. <code>{"{prazo}"}</code> e{" "}
+          <code>{"{dataFim}"}</code> são a mesma data (a de devolução). <code>{"{valor}"}</code>{" "}
+          muda de sentido conforme a mensagem: quanto ainda falta pagar na cobrança e no lembrete,
+          e o valor combinado do empréstimo na confirmação e no comprovante.{" "}
+          <code>{"{pix}"}</code> é só a chave cadastrada (sem nenhum texto em volta) e{" "}
+          <code>{"{pixnome}"}</code> é só o nome do recebedor — monte a frase do seu jeito,
+          por exemplo <code>{"Pix: {pix} ({pixnome})"}</code>.
         </div>
         <label style={labelStyle}>Mensagem de confirmação de empréstimo</label>
         <textarea

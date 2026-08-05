@@ -819,6 +819,7 @@ function App() {
         valorSemanal: dados.valorSemanal ? parseFloat(dados.valorSemanal) : null,
         valorSemanaExtra: dados.valorSemanaExtra ? parseFloat(dados.valorSemanaExtra) : null,
         valorReposicao: dados.valorReposicao ? parseFloat(dados.valorReposicao) : null,
+        valorAquisicao: dados.valorAquisicao ? parseFloat(dados.valorAquisicao) : 0,
         limiteSemanas: dados.limiteSemanas ? parseInt(dados.limiteSemanas, 10) : null,
         categoria: (dados.categoria || "").trim(),
         tags: dados.tags || [],
@@ -845,6 +846,7 @@ function App() {
               valorSemanal: dados.valorSemanal ? parseFloat(dados.valorSemanal) : null,
               valorSemanaExtra: dados.valorSemanaExtra ? parseFloat(dados.valorSemanaExtra) : null,
               valorReposicao: dados.valorReposicao ? parseFloat(dados.valorReposicao) : null,
+              valorAquisicao: dados.valorAquisicao ? parseFloat(dados.valorAquisicao) : 0,
               limiteSemanas: dados.limiteSemanas ? parseInt(dados.limiteSemanas, 10) : null,
               categoria: (dados.categoria || "").trim(),
               tags: dados.tags || [],
@@ -1351,6 +1353,7 @@ function App() {
         {tab === "financeiro" && (
           <FinanceiroTab
             emprestimos={emprestimos}
+            livros={livros}
             cobrancas={cobrancas}
             pessoaById={pessoaById}
             livroById={livroById}

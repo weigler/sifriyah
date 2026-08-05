@@ -18,8 +18,10 @@ function ListaPedidosCard({ pf, livroById, erro, onAceitar, onDescartar, aceitar
           <div style={{ fontFamily: "'Playfair Display', serif", fontWeight: 700, fontSize: 15 }}>
             {livro ? livro.titulo : pf.tituloLivro || "(livro removido)"}
           </div>
-          {pf.tipo === "sugestao" && pf.autorSugerido && (
-            <div style={{ fontSize: 12.5, color: COLORS.inkSoft, marginTop: 1 }}>{pf.autorSugerido}</div>
+          {pf.tipo === "sugestao" && (pf.autorSugerido || pf.editoraSugerida) && (
+            <div style={{ fontSize: 12.5, color: COLORS.inkSoft, marginTop: 1 }}>
+              {[pf.autorSugerido, pf.editoraSugerida].filter(Boolean).join(" · ")}
+            </div>
           )}
           <div style={{ fontSize: 12.5, color: COLORS.inkSoft, marginTop: 2 }}>
             {pf.codigoUsuario ? (

@@ -118,7 +118,19 @@ function calcularMulta(emp, livro, config) {
   const semanas = Math.ceil(dias / 7);
   const valorSemana =
     (config && config.valorMultaSemanal) || (livro && (livro.valorSemanaExtra || livro.valorSemanal)) || 0;
-  return semanas * valorSemana;
+  let multa = semanas * valorSemana;
+  // teto opcional (config.tetoMulta) — evita que um empréstimo esquecido por meses vire uma
+  // dívida impagável; acima do teto, a multa simplesmente para de crescer
+  if (config && config.tetoMulta) multa = Math.min(multa, config.tetoMulta);
+  return multa;
+}
+
+// dias que faltam pro prazo de um empréstimo ainda ativo: positivo = ainda faltam N dias,
+// 0 = vence hoje, negativo = já passou do prazo (nesse caso quem cuida é diasAtraso/calcularMulta,
+// não esta função — ela só serve pro aviso de "vencendo em breve", não de atraso)
+function diasParaVencer(emp) {
+  if (!emp || emp.devolvido || !emp.prazo) return null;
+  return -daysBetween(emp.prazo);
 }
 
 // gera e baixa um arquivo CSV a partir de um cabeçalho e uma lista de linhas (arrays de valores) —

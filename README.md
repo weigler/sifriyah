@@ -34,7 +34,7 @@ Avisa automaticamente, via bot do Telegram, quando chega um pedido novo de fila/
    - `TELEGRAM_BOT_TOKEN` — o token do bot
    - `TELEGRAM_CHAT_ID` — o chat_id de destino
    - `SIFRIYAH_APP_PASSWORD` — a senha local do app (a mesma usada pra desbloquear o Sifriyah); se ela for trocada no app, precisa atualizar aqui também
-5. O workflow (`.github/workflows/notificar-pedidos.yml`) já vem pronto, rodando a cada 6 horas — não precisa mexer nele
+5. O workflow (`.github/workflows/notificar-pedidos.yml`) já vem pronto, rodando a cada 3 horas — não precisa mexer nele
 
 ### 4. Publicar (GitHub Pages)
 

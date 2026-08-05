@@ -339,6 +339,7 @@
     <p>Sugere um título que a biblioteca ainda não tem — sem compromisso, é só pra ajudar a decidir a próxima compra.</p>
     <input type="text" id="sgTitulo" placeholder="Título do livro">
     <input type="text" id="sgAutor" placeholder="Autor (se souber)">
+    <input type="text" id="sgEditora" placeholder="Editora (opcional)">
     <input type="text" id="sgCodigo" placeholder="Seu código de usuário (se já tiver, opcional)">
     <div class="linha">
       <input type="text" id="sgNome" placeholder="Seu nome (opcional)">
@@ -620,6 +621,7 @@ document.getElementById("pcEnviar").addEventListener("click", async () => {
 document.getElementById("sgEnviar").addEventListener("click", async () => {
   const titulo = document.getElementById("sgTitulo").value.trim();
   const autor = document.getElementById("sgAutor").value.trim();
+  const editora = document.getElementById("sgEditora").value.trim();
   const codigo = document.getElementById("sgCodigo").value.trim().toUpperCase();
   const nome = document.getElementById("sgNome").value.trim();
   const telefone = document.getElementById("sgTelefone").value.trim();
@@ -637,6 +639,7 @@ document.getElementById("sgEnviar").addEventListener("click", async () => {
       tipo: "sugestao",
       tituloLivro: titulo,
       autorSugerido: autor || null,
+      editoraSugerida: editora || null,
       codigoUsuario: codigo || null,
       nome: nome || null,
       sobrenome: null,
@@ -648,6 +651,7 @@ document.getElementById("sgEnviar").addEventListener("click", async () => {
     msg.textContent = "Sugestão enviada, obrigado!";
     document.getElementById("sgTitulo").value = "";
     document.getElementById("sgAutor").value = "";
+    document.getElementById("sgEditora").value = "";
     document.getElementById("sgCodigo").value = "";
     document.getElementById("sgNome").value = "";
     document.getElementById("sgTelefone").value = "";

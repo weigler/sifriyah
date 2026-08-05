@@ -1,9 +1,10 @@
 // ---------------- Financeiro ----------------
-function FinanceiroTab({ emprestimos, cobrancas, pessoaById, livroById, totalPago, onRemoverCobranca, config }) {
+function FinanceiroTab({ emprestimos, livros, cobrancas, pessoaById, livroById, totalPago, onRemoverCobranca, config }) {
   const totalMultas = emprestimos.reduce((s, e) => s + calcularMulta(e, livroById(e.livroId), config), 0);
   const totalCombinado = emprestimos.reduce((s, e) => s + (e.valorCombinado || 0), 0) + totalMultas;
   const totalRecebido = emprestimos.reduce((s, e) => s + totalPago(e), 0);
   const totalPendente = Math.max(0, totalCombinado - totalRecebido);
+  const totalAquisicoes = (livros || []).reduce((s, l) => s + (l.valorAquisicao || 0), 0);
 
   const pagamentos = emprestimos
     .flatMap((e) => (e.pagamentos || []).map((p) => ({ ...p, emprestimo: e })))
@@ -88,6 +89,7 @@ function FinanceiroTab({ emprestimos, cobrancas, pessoaById, livroById, totalPag
         <div>Combinado (todos)<b>${fmtMoney(totalCombinado)}</b></div>
         <div>Recebido<b>${fmtMoney(totalRecebido)}</b></div>
         <div>Pendente<b>${fmtMoney(totalPendente)}</b></div>
+        <div>Valor em aquisições<b>${fmtMoney(totalAquisicoes)}</b></div>
       </div>
       <h2>Livros mais emprestados</h2>
       <table>${linhasRanking || "<tr><td>Sem dados ainda.</td></tr>"}</table>
@@ -113,6 +115,7 @@ function FinanceiroTab({ emprestimos, cobrancas, pessoaById, livroById, totalPag
             { label: "multas em aberto", valor: totalMultas, cor: COLORS.rust },
             { label: "recebido", valor: totalRecebido, cor: COLORS.sage },
             { label: "pendente", valor: totalPendente, cor: COLORS.rust },
+            { label: "valor em aquisições", valor: totalAquisicoes, cor: COLORS.gold },
           ].map((c) => (
             <div
               key={c.label}

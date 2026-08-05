@@ -19,13 +19,14 @@ Todo o estado do app vive em memória (`useState`) em quatro grandes coleções,
 
 ```
 { id, titulo, autor, paginas, dataAquisicao, categoria, nivel,
-  valorSemanal, valorSemanaExtra, valorReposicao, quantidade, limiteSemanas,
+  valorSemanal, valorSemanaExtra, valorReposicao, valorAquisicao, quantidade, limiteSemanas,
   sinopse, tags: [], linkExterno, capaUrl }
 ```
 
 - `valorSemanal` é o preço-base de aluguel por semana, usado para sugerir o valor de um empréstimo novo (`valorSemanal × limiteSemanas`) e para calcular o desconto de devolução antecipada.
 - `valorSemanaExtra` é o preço de cada semana **além** do combinado original — usado tanto na renovação manual ("+1 semana") quanto no cálculo automático de multa por atraso. Se não estiver preenchido, todo o sistema cai de volta para `valorSemanal` como aproximação.
 - `valorReposicao` (opcional) é o custo sugerido quando um exemplar desse livro é marcado como perdido ou danificado (ver [Perdido/danificado](#perdido-ou-danificado)). Se não preenchido, o campo de custo aparece em branco na hora de marcar, e o admin digita o valor manualmente.
+- `valorAquisicao` é quanto a biblioteca gastou pra adquirir aquele exemplar — soma direto no card "valor em aquisições" da aba Financeiro. `0` (o padrão) significa doado, ou emprestado por alguém pra biblioteca (não é um gasto real). Não afeta nenhum cálculo de preço de empréstimo — é só um registro de investimento.
 - `quantidade` é o número de unidades físicas daquele título; o sistema permite empréstimos simultâneos até esse limite (`unidadesEmprestadas(livroId) < quantidade`).
 - `nivel` é um enum fechado: `Infantil, Juvenil, Iniciante, Intermediário, Avançado, Acadêmico`.
 
@@ -75,9 +76,11 @@ Registro de auditoria: toda vez que uma mensagem de cobrança, lembrete de prazo
 ### Config (`ajustes`)
 
 Chave Pix, nome do recebedor, WhatsApp de contato geral, link da vitrine, quantos dias uma
-reserva pendente demora pra expirar sozinha (`diasExpiracaoReserva`, padrão 3), promoção ativa
-(`{ ativa, descricao, validoAte, desconto }`) e os quatro modelos de mensagem editáveis
-(`modeloCobranca`, `modeloRenovacao`, `modeloConfirmacao`, `modeloRecibo`).
+reserva pendente demora pra expirar sozinha (`diasExpiracaoReserva`, padrão 3), com quantos dias
+de antecedência avisar de um vencimento próximo (`diasAvisoVencimento`, padrão 2), teto opcional
+pra multa por empréstimo (`tetoMulta`), promoção ativa (`{ ativa, descricao, validoAte, desconto }`)
+e os quatro modelos de mensagem editáveis (`modeloCobranca`, `modeloRenovacao`, `modeloConfirmacao`,
+`modeloRecibo`).
 
 ---
 
@@ -107,6 +110,12 @@ multa = semanasAtraso × valorSemana
 `valorMultaSemanal` é um campo opcional em Ajustes — um valor único, geral, que substitui a taxa por livro quando preenchido. Se deixado em branco, cada livro usa sua própria taxa (`valorSemanaExtra`, com `valorSemanal` como último recurso).
 Se `emprestimo.multaAnulada === true`, a multa é sempre 0, independente do atraso — um botão "anular multa" / "reativar multa" alterna essa flag por empréstimo. Isso existe especificamente para cobrir o caso de o livro já ter sido devolvido na prática, mas o admin só ter marcado isso no sistema alguns dias depois: sem a anulação, o atraso "de sistema" geraria uma multa indevida.
 
+`config.tetoMulta` (opcional, em Ajustes) limita o valor máximo que a multa de **um único
+empréstimo** pode atingir — acima do teto, ela simplesmente para de crescer com o tempo. Existe
+pra evitar que um empréstimo esquecido durante meses vire uma dívida impagável (e a pessoa acabe
+simplesmente sumindo, em vez de devolver o livro). Sem teto configurado (campo em branco), o
+comportamento é o de sempre: multa crescendo sem limite enquanto o atraso continuar.
+
 Por ser puramente derivada (não persistida), a multa nunca fica dessincronizada — junto com o pagamento, ela entra automaticamente em:
 - `restante` (o "falta pagar" mostrado em cada empréstimo e usado no texto de cobrança),
 - na regra de bloqueio de débito (abaixo),
@@ -119,6 +128,16 @@ Por ser puramente derivada (não persistida), a multa nunca fica dessincronizada
 **Total pago** (`totalPago`): soma simples do array `pagamentos` de um empréstimo — pagamentos parciais são permitidos e ficam listados individualmente (com opção de remover um lançamento errado).
 
 **Aba "devedores"** (filtro dentro de Empréstimos): mostra todo empréstimo com `restante > 0` — **independente de já devolvido ou não**. É diferente do bloqueio de débito acima (que olha a pessoa como um todo): aqui é por empréstimo, então dá pra ver exatamente qual livro ainda tem valor em aberto, mesmo que já tenha voltado pra estante. Quando há alguém devendo, aparece um aviso no topo da aba (igual ao de atrasados) com a contagem de pessoas e o valor total em aberto; a lista, nesse filtro, ordena do maior débito pro menor.
+
+### Aviso de vencimento próximo
+
+Diferente do aviso de atraso (que só aparece depois que o prazo já passou), esse avisa **antes**:
+`diasParaVencer(emp)` calcula quantos dias faltam pro prazo de um empréstimo ainda ativo
+(negativo = já atrasado, mas nesse caso quem cuida é o aviso de atraso, não este). Quando o valor
+fica entre 0 e `config.diasAvisoVencimento` (padrão 2 dias), o empréstimo entra no filtro
+"vencendo" — aparece um aviso amarelo no topo da aba (🔔, mesmo padrão visual do aviso de
+atrasados/devedores) e cada cartão mostra "vence hoje" ou "vence em N dias". A ideia é dar tempo
+de cobrar antes que o atraso vire multa, não só depois.
 
 ### Perdido ou danificado
 
@@ -196,7 +215,7 @@ A vitrine pública (`catalogo/index.html`) não escreve diretamente nas coleçõ
   telefone, criadoEm, atendido, atendidoEm, expirado }
 ```
 
-Quem visita o catálogo pode se identificar de duas formas: pelo `codigoUsuario` (se já é cadastrado) ou por nome + telefone (se ainda não é). O formulário de fila/reserva é o mesmo para os dois tipos — só muda o rótulo do botão e o `tipo` gravado, conforme o livro esteja disponível (reserva) ou emprestado (fila). Sugestão de livro é um formulário separado, mais simples (título, autor opcional, identificação opcional), que usa a mesma coleção com `tipo: "sugestao"` e `tituloLivro`/`autorSugerido` no lugar de `livroId` (que não existe, já que o livro sugerido ainda não está no acervo).
+Quem visita o catálogo pode se identificar de duas formas: pelo `codigoUsuario` (se já é cadastrado) ou por nome + telefone (se ainda não é). O formulário de fila/reserva é o mesmo para os dois tipos — só muda o rótulo do botão e o `tipo` gravado, conforme o livro esteja disponível (reserva) ou emprestado (fila). Sugestão de livro é um formulário separado, mais simples (título, autor opcional, editora opcional, identificação opcional), que usa a mesma coleção com `tipo: "sugestao"` e `tituloLivro`/`autorSugerido`/`editoraSugerida` no lugar de `livroId` (que não existe, já que o livro sugerido ainda não está no acervo).
 
 No app administrativo, a aba **Fila** ouve essa coleção em tempo real e separa visualmente os três tipos em listas próprias. **Aceitar** um pedido tem efeito diferente conforme o tipo:
 - **Fila**: tenta casar `codigoUsuario` com uma pessoa existente (ou o nome, se veio sem código); se achar, cria de verdade uma entrada na fila digital daquele livro (criando a pessoa também, se for a primeira vez que aparece); se não achar ninguém e não veio nome junto, mostra um erro em vez de falhar silenciosamente.
@@ -219,7 +238,9 @@ Usa a Notification API nativa do navegador — não é push (não funciona com o
 
 ## Mensagens via WhatsApp
 
-Todas as mensagens (confirmação de empréstimo, cobrança, lembrete de prazo, comprovante de quitação, envio de código de usuário) são geradas client-side e abertas via link `https://wa.me/<telefone>?text=<mensagem>` — não há integração com a API oficial do WhatsApp, é só um deep link. Quatro dos cinco textos são editáveis pelo admin em Ajustes, com um pequeno mecanismo de template (`preencherModelo`): o texto guardado tem placeholders `{nome}`, `{livro}`, `{valor}`, `{prazo}`, `{dataInicio}`, `{dataFim}`, `{pix}`, substituídos por regex na hora de montar a mensagem final. Se o admin não personalizou um modelo, cada função tem um texto padrão embutido no código.
+Todas as mensagens (confirmação de empréstimo, cobrança, lembrete de prazo, comprovante de quitação, envio de código de usuário) são geradas client-side e abertas via link `https://wa.me/<telefone>?text=<mensagem>` — não há integração com a API oficial do WhatsApp, é só um deep link. Quatro dos cinco textos são editáveis pelo admin em Ajustes, com um pequeno mecanismo de template (`preencherModelo`): o texto guardado tem placeholders `{nome}`, `{livro}`, `{valor}`, `{prazo}`, `{dataInicio}`, `{dataFim}`, `{pix}`, `{pixnome}`, substituídos por regex na hora de montar a mensagem final. Se o admin não personalizou um modelo, cada função tem um texto padrão embutido no código.
+
+`{pix}` e `{pixnome}` são valores **brutos** — a chave Pix cadastrada e o nome do recebedor, sem nenhum texto em volta (nem o "Pix:", nem os parênteses). Isso é proposital: o admin monta a frase do jeito que quiser no template (ex.: `Pix: {pix} ({pixnome})`), em vez do app decidir um formato fixo. O modelo padrão de cobrança já vem assim; se `recebedor` estiver em branco, `{pixnome}` também substitui por vazio (então o parêntese fica vazio "()" — vale ajustar o texto do modelo se isso incomodar).
 
 A mensagem de confirmação de empréstimo é a única que sempre aparece (não depende de haver saldo pendente); cobrança e lembrete de prazo só aparecem quando há algo a cobrar. O botão "Enviar comprovante" (`modeloRecibo`) aparece quando o empréstimo está com saldo zerado e algum pagamento já foi registrado (`restante === 0 && totalPago > 0`) — funciona tanto pra empréstimo já devolvido quanto pra um que a pessoa quitou mas ainda está com o livro.
 

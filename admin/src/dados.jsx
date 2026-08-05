@@ -28,6 +28,7 @@ function migrarDados(parsed) {
     valorSemanal: null,
     valorSemanaExtra: null,
     valorReposicao: null,
+    valorAquisicao: null,
     limiteSemanas: null,
     categoria: "",
     tags: [],
