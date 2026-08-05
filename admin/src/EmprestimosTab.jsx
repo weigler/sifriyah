@@ -187,6 +187,8 @@ function EmprestimosTab({
     });
   }
 
+  const diasAvisoVencimento = config.diasAvisoVencimento || 2;
+
   const lista = emprestimos
     .filter((e) => {
       if (filtro === "ativos") return !e.devolvido;
@@ -216,7 +218,6 @@ function EmprestimosTab({
       return pa - pb;
     });
 
-  const diasAvisoVencimento = config.diasAvisoVencimento || 2;
   const qtdAtrasados = emprestimos.filter((e) => !e.devolvido && statusOf(e) === "atrasado").length;
   const qtdVencendo = emprestimos.filter((e) => {
     const dias = diasParaVencer(e);
@@ -679,7 +680,7 @@ function EmprestimosTab({
                     </div>
                   )}
 
-                  {pessoa && pessoa.telefone && restante === 0 && pago > 0 && (
+                  {pessoa && pessoa.telefone && restante < 0.01 && pago > 0 && (
                     <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
                       <a href={linkWhatsApp(pessoa.telefone, mensagemRecibo(emp, livro, pessoa))} target="_blank" rel="noreferrer">
                         <Button variant="whats" style={{ padding: "7px 12px", fontSize: 13 }}>
