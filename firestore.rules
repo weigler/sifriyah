@@ -19,10 +19,17 @@ service cloud.firestore {
       allow read, write: if true;
     }
 
-    // pedidos de "entrar na fila" vindos da vitrine
+    // pedidos de "entrar na fila" vindos da vitrine (inclui também sugestões de livro, que usam
+    // a mesma coleção com tipo: "sugestao")
     match /sifriyah_pedidos_fila/{id} {
       allow create: if true;
       allow read, update, delete: if request.auth != null;
+    }
+
+    // log de auditoria — só admin autenticado lê ou grava; o app nunca edita nem apaga uma linha
+    // já escrita, só acrescenta (mas a regra em si não impede update/delete manual no Console)
+    match /sifriyah_auditoria/{id} {
+      allow read, create: if request.auth != null;
     }
   }
 }

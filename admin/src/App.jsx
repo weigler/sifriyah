@@ -140,6 +140,38 @@ function App() {
   const [carregandoBackups, setCarregandoBackups] = useState(false);
   const [fazendoBackup, setFazendoBackup] = useState(false);
 
+  // ---- Log de auditoria (opcional, só existe com nuvem conectada) ----
+  const [auditoria, setAuditoria] = useState([]);
+  const [carregandoAuditoria, setCarregandoAuditoria] = useState(false);
+  async function carregarAuditoria() {
+    if (!cloudConfig) return;
+    setCarregandoAuditoria(true);
+    try {
+      setAuditoria(await nuvemListarAuditoria(cloudConfig, cloudDocId));
+    } catch (e) {
+      console.error("Erro ao carregar log de auditoria:", e);
+    }
+    setCarregandoAuditoria(false);
+  }
+  // registra uma linha no log de auditoria — silencioso e best-effort, nunca deve travar a ação
+  // que está sendo registrada; só existe quando conectado à nuvem
+  function auditar(acao, detalhe) {
+    if (!cloudConfig) return;
+    nuvemRegistrarAuditoria(cloudConfig, cloudDocId, acao, detalhe || "", adminEmail || "").catch((e) =>
+      console.error("Erro ao registrar auditoria:", e)
+    );
+  }
+
+  // expira reservas pendentes há mais de X dias sem retirada (configurável, padrão 3) — feito
+  // uma vez por sessão, igual à limpeza de pedidos antigos já atendidos
+  useEffect(() => {
+    if (!cloudConfig || !unlocked) return;
+    nuvemExpirarReservasAntigas(cloudConfig, cloudDocId, config.diasExpiracaoReserva).catch((e) =>
+      console.error("Erro ao expirar reservas antigas:", e)
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cloudConfig, cloudDocId, unlocked]);
+
   useEffect(() => {
     (async () => {
       setCloudStatus(cloudConfig ? "conectando" : "desligada");
@@ -272,6 +304,13 @@ function App() {
       nuvemMarcarAtendidoPedidoFila(cloudConfig, pf.id).catch(() => {});
       return { ok: true };
     }
+    if (pf.tipo === "sugestao") {
+      // sugestão de livro não vira nada automaticamente — "aceitar" só marca como vista;
+      // se a biblioteca decidir comprar, o livro é cadastrado manualmente em Acervo
+      nuvemMarcarAtendidoPedidoFila(cloudConfig, pf.id).catch(() => {});
+      auditar("Sugestão de livro marcada como vista", pf.tituloLivro || "");
+      return { ok: true };
+    }
     let pessoa = pf.codigoUsuario
       ? pessoas.find((p) => (p.codigoUsuario || "").toUpperCase() === pf.codigoUsuario.toUpperCase())
       : null;
@@ -344,6 +383,7 @@ function App() {
   }
 
   async function apagarTudoEComecarDeNovo() {
+    auditar("Todos os dados apagados (reset)", "");
     const agora = Date.now();
     for (const s of SECOES) {
       ultimosTimestampsRef.current[s] = agora;
@@ -596,6 +636,7 @@ function App() {
   }
 
   async function restaurarBackup(backup) {
+    auditar("Backup restaurado", `feito em ${fmtDataHora(backup.criadoEm)} (${backup.tipo || "?"})`);
     const decodificado = {};
     for (const s of SECOES) {
       if (backup.secoes[s]) {
@@ -673,6 +714,7 @@ function App() {
     try {
       await reencriptarTudoCom(senhaAtual, novaSenha);
       setSenhaAtual(novaSenha);
+      auditar("Senha do app alterada", "");
       return { ok: true };
     } catch (e) {
       console.error("Erro ao trocar senha:", e);
@@ -753,7 +795,7 @@ function App() {
   }
 
   function statusOf(emp) {
-    if (emp.devolvido) return "devolvido";
+    if (emp.devolvido) return emp.statusFinal || "devolvido";
     if (emp.prazo && daysBetween(emp.prazo) > 0) return "atrasado";
     return "emprestado";
   }
@@ -776,6 +818,7 @@ function App() {
         capaUrl: dados.capaUrl || null,
         valorSemanal: dados.valorSemanal ? parseFloat(dados.valorSemanal) : null,
         valorSemanaExtra: dados.valorSemanaExtra ? parseFloat(dados.valorSemanaExtra) : null,
+        valorReposicao: dados.valorReposicao ? parseFloat(dados.valorReposicao) : null,
         limiteSemanas: dados.limiteSemanas ? parseInt(dados.limiteSemanas, 10) : null,
         categoria: (dados.categoria || "").trim(),
         tags: dados.tags || [],
@@ -801,6 +844,7 @@ function App() {
               capaUrl: dados.capaUrl || null,
               valorSemanal: dados.valorSemanal ? parseFloat(dados.valorSemanal) : null,
               valorSemanaExtra: dados.valorSemanaExtra ? parseFloat(dados.valorSemanaExtra) : null,
+              valorReposicao: dados.valorReposicao ? parseFloat(dados.valorReposicao) : null,
               limiteSemanas: dados.limiteSemanas ? parseInt(dados.limiteSemanas, 10) : null,
               categoria: (dados.categoria || "").trim(),
               tags: dados.tags || [],
@@ -815,7 +859,9 @@ function App() {
   }
 
   function removeLivro(id) {
-    setLivros((prev) => prev.filter((l) => l.id !== id));
+    const l = livroById(id);
+    setLivros((prev) => prev.filter((x) => x.id !== id));
+    if (l) auditar("Livro removido do acervo", l.titulo);
   }
 
   // ---- Ações: Pessoas ----
@@ -838,7 +884,9 @@ function App() {
     });
   }
   function removePessoa(id) {
-    setPessoas((prev) => prev.filter((p) => p.id !== id));
+    const p = pessoaById(id);
+    setPessoas((prev) => prev.filter((x) => x.id !== id));
+    if (p) auditar("Pessoa removida", nomeCompleto(p));
   }
 
   // ---- Ações: Empréstimos ----
@@ -875,6 +923,10 @@ function App() {
     ]);
     // se essa pessoa estava na fila de espera desse livro, já sai da fila (pegou o livro agora)
     setFilas((prev) => prev.filter((f) => !(f.livroId === data.livroId && f.pessoaId === pessoaId)));
+
+    const livroTitulo = livroById(data.livroId)?.titulo || "livro removido";
+    const pessoaNome = pessoaId ? pessoaById(pessoaId)?.nome || data.pessoaNovaNome || "" : data.pessoaNovaNome || "";
+    auditar("Empréstimo registrado", `${livroTitulo}${pessoaNome ? " · " + pessoaNome : ""}`);
   }
 
   // ---- Fila de espera por livro ----
@@ -929,6 +981,7 @@ function App() {
 
   function marcarDevolvido(id, desconto) {
     const abatimento = parseFloat(desconto) || 0;
+    const emp = emprestimos.find((e) => e.id === id);
     setEmprestimos((prev) =>
       prev.map((e) =>
         e.id === id
@@ -941,6 +994,44 @@ function App() {
           : e
       )
     );
+    if (emp) {
+      const livro = livroById(emp.livroId);
+      const pessoa = pessoaById(emp.pessoaId);
+      auditar("Devolução registrada", `${livro ? livro.titulo : "livro removido"} · ${pessoa ? nomeCompleto(pessoa) : "pessoa removida"}`);
+    }
+  }
+
+  // registra um exemplar como perdido ou danificado: encerra o empréstimo (igual devolver), soma
+  // o custo de reposição ao valor devido pela pessoa (reaproveitando o mecanismo de dívida já
+  // existente, sem precisar de um cálculo separado) e tira uma unidade do acervo desse livro
+  function marcarPerdidoDanificado(id, tipo, custoReposicao) {
+    const custo = parseFloat(custoReposicao) || 0;
+    const emp = emprestimos.find((e) => e.id === id);
+    setEmprestimos((prev) =>
+      prev.map((e) =>
+        e.id === id
+          ? {
+              ...e,
+              devolvido: true,
+              dataDevolucao: todayISO(),
+              statusFinal: tipo, // "perdido" | "danificado"
+              custoReposicao: custo,
+              valorCombinado: (e.valorCombinado || 0) + custo,
+            }
+          : e
+      )
+    );
+    if (emp) {
+      setLivros((prev) =>
+        prev.map((l) => (l.id === emp.livroId ? { ...l, quantidade: Math.max(0, (l.quantidade || 1) - 1) } : l))
+      );
+      const livro = livroById(emp.livroId);
+      const pessoa = pessoaById(emp.pessoaId);
+      auditar(
+        tipo === "perdido" ? "Livro marcado como perdido" : "Livro marcado como danificado",
+        `${livro ? livro.titulo : "livro removido"} · ${pessoa ? nomeCompleto(pessoa) : "pessoa removida"} · custo: ${fmtMoney(custo)}`
+      );
+    }
   }
 
   // acrescenta mais uma semana ao prazo do empréstimo, e já soma o valor semanal do livro
@@ -967,6 +1058,7 @@ function App() {
   function addPagamento(id, valor) {
     const v = parseFloat(valor);
     if (!v || v <= 0) return;
+    const emp = emprestimos.find((e) => e.id === id);
     setEmprestimos((prev) =>
       prev.map((e) =>
         e.id === id
@@ -974,6 +1066,10 @@ function App() {
           : e
       )
     );
+    if (emp) {
+      const pessoa = pessoaById(emp.pessoaId);
+      auditar("Pagamento registrado", `${pessoa ? nomeCompleto(pessoa) : "pessoa removida"} · ${fmtMoney(v)}`);
+    }
   }
 
   function removerPagamento(empId, pagamentoId) {
@@ -1200,6 +1296,7 @@ function App() {
             onRemoverPagamento={removerPagamento}
             onRemover={removeEmprestimo}
             onRegistrarCobranca={registrarCobranca}
+            onMarcarPerdidoDanificado={marcarPerdidoDanificado}
           />
         )}
         {tab === "acervo" && (
@@ -1289,6 +1386,15 @@ function App() {
             onSairAdmin={sairAdmin}
             notifPermitida={notifPermitida}
             onPedirPermissaoNotificacao={pedirPermissaoNotificacao}
+            livros={livros}
+            pessoas={pessoas}
+            emprestimos={emprestimos}
+            livroById={livroById}
+            pessoaById={pessoaById}
+            totalPago={totalPago}
+            auditoria={auditoria}
+            carregandoAuditoria={carregandoAuditoria}
+            onCarregarAuditoria={carregarAuditoria}
           />
         )}
       </div>

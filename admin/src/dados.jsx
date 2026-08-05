@@ -27,6 +27,7 @@ function migrarDados(parsed) {
     capaUrl: null,
     valorSemanal: null,
     valorSemanaExtra: null,
+    valorReposicao: null,
     limiteSemanas: null,
     categoria: "",
     tags: [],

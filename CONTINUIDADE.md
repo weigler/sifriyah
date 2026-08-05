@@ -92,8 +92,13 @@ dessa mudança precisa ser reinstalado a partir da pasta nova (`admin/` ou `cata
 | `sifriyah_backups` | admin | admin |
 | `sifriyah_publico` | pública | admin |
 | `sifriyah_precadastros` | admin | pública (create) / admin (resto) |
-| `sifriyah_pedidos_fila` | admin | pública (create) / admin (resto) |
+| `sifriyah_pedidos_fila` | admin | pública (create) / admin (resto) — inclui `tipo: "fila"`, `"reserva"` e `"sugestao"` |
+| `sifriyah_auditoria` | admin | admin (só `create`, nunca `update`/`delete` pelo app) |
 | `sifriyah_notificacoes` | só o script do GitHub Actions (Admin SDK, ignora regras) | idem |
+
+`firestore.rules` agora está versionado no repo (raiz) e inclui a regra de `sifriyah_auditoria`
+adicionada nesta rodada — **precisa ser colado no Console de novo** pra essa coleção funcionar em
+produção, já que o app só lê o que está publicado lá, não o arquivo do repo.
 
 Regras publicadas hoje no Firestore Console — copiar de lá se precisar conferir; não tenho como ler o console diretamente.
 

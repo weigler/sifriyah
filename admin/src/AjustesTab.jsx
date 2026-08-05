@@ -25,12 +25,22 @@ function AjustesTab({
   onSairAdmin,
   notifPermitida,
   onPedirPermissaoNotificacao,
+  livros,
+  pessoas,
+  emprestimos,
+  livroById,
+  pessoaById,
+  totalPago,
+  auditoria,
+  carregandoAuditoria,
+  onCarregarAuditoria,
 }) {
   const [pix, setPix] = useState(config.pix || "");
   const [recebedor, setRecebedor] = useState(config.recebedor || "");
   const [whatsappContato, setWhatsappContato] = useState(config.whatsappContato || "");
   const [valorMultaSemanal, setValorMultaSemanal] = useState(config.valorMultaSemanal || "");
   const [maxBackupsAutomaticos, setMaxBackupsAutomaticos] = useState(config.maxBackupsAutomaticos || "");
+  const [diasExpiracaoReserva, setDiasExpiracaoReserva] = useState(config.diasExpiracaoReserva || "");
   const [linkVitrine, setLinkVitrine] = useState(config.linkVitrine || "");
   const [promoAtiva, setPromoAtiva] = useState(config.promocao?.ativa || false);
   const [promoDescricao, setPromoDescricao] = useState(config.promocao?.descricao || "");
@@ -42,9 +52,12 @@ function AjustesTab({
     'Oi {nome}! 👋 Só passando pra saber sobre o livro "{livro}" — o prazo era {prazo}. Você já terminou ou quer renovar por mais um tempo? Me avisa 🙂';
   const MODELO_CONFIRMACAO_PADRAO =
     'Oi {nome}! 👋 Seu empréstimo do livro "{livro}" foi confirmado! Início: {dataInicio}. Devolução prevista: {dataFim}. Valor combinado: {valor}. Qualquer dúvida é só chamar 📚';
+  const MODELO_RECIBO_PADRAO =
+    'Oi {nome}! ✅ Recebido! O empréstimo do livro "{livro}" está quitado — valor total: {valor}. Muito obrigado! 📚';
   const [modeloCobranca, setModeloCobranca] = useState(config.modeloCobranca || MODELO_COBRANCA_PADRAO);
   const [modeloRenovacao, setModeloRenovacao] = useState(config.modeloRenovacao || MODELO_RENOVACAO_PADRAO);
   const [modeloConfirmacao, setModeloConfirmacao] = useState(config.modeloConfirmacao || MODELO_CONFIRMACAO_PADRAO);
+  const [modeloRecibo, setModeloRecibo] = useState(config.modeloRecibo || MODELO_RECIBO_PADRAO);
   const [colado, setColado] = useState("");
   const [docId, setDocId] = useState(cloudConfig?.docId || "principal");
   const [erroNuvem, setErroNuvem] = useState("");
@@ -69,6 +82,7 @@ function AjustesTab({
 
   useEffect(() => {
     onAtualizarBackups();
+    if (cloudConfig) onCarregarAuditoria();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -139,6 +153,7 @@ function AjustesTab({
       linkVitrine,
       valorMultaSemanal: valorMultaSemanal ? parseFloat(valorMultaSemanal) : 0,
       maxBackupsAutomaticos: maxBackupsAutomaticos ? parseInt(maxBackupsAutomaticos, 10) : 0,
+      diasExpiracaoReserva: diasExpiracaoReserva ? parseInt(diasExpiracaoReserva, 10) : 0,
       promocao: {
         ativa: promoAtiva,
         descricao: promoDescricao,
@@ -148,7 +163,49 @@ function AjustesTab({
       modeloCobranca,
       modeloRenovacao,
       modeloConfirmacao,
+      modeloRecibo,
     });
+  }
+
+  function exportarAcervoCSV() {
+    const cabecalho = [
+      "Título", "Autor", "Categoria", "Nível", "Unidades", "Valor semanal",
+      "Valor semana extra", "Custo de reposição", "Páginas", "Adquirido em",
+    ];
+    const linhas = (livros || []).map((l) => [
+      l.titulo, l.autor || "", l.categoria || "", l.nivel || "", l.quantidade || 1,
+      l.valorSemanal || "", l.valorSemanaExtra || "", l.valorReposicao || "", l.paginas || "", l.dataAquisicao || "",
+    ]);
+    baixarCSV(`sifriyah-acervo-${todayISO()}.csv`, cabecalho, linhas);
+  }
+
+  function exportarPessoasCSV() {
+    const cabecalho = ["Nome", "Sobrenome", "Telefone", "E-mail", "Código de usuário"];
+    const linhas = (pessoas || []).map((p) => [p.nome, p.sobrenome || "", p.telefone || "", p.email || "", p.codigoUsuario || ""]);
+    baixarCSV(`sifriyah-pessoas-${todayISO()}.csv`, cabecalho, linhas);
+  }
+
+  function exportarEmprestimosCSV() {
+    const cabecalho = [
+      "Livro", "Pessoa", "Data empréstimo", "Prazo", "Devolvido em", "Situação",
+      "Valor combinado", "Total pago", "Status",
+    ];
+    const linhas = (emprestimos || []).map((e) => {
+      const livro = livroById(e.livroId);
+      const pessoa = pessoaById(e.pessoaId);
+      return [
+        livro ? livro.titulo : "(livro removido)",
+        pessoa ? nomeCompleto(pessoa) : "(pessoa removida)",
+        e.dataEmprestimo || "",
+        e.prazo || "",
+        e.dataDevolucao || "",
+        e.statusFinal || (e.devolvido ? "devolvido" : ""),
+        e.valorCombinado || 0,
+        totalPago(e),
+        e.devolvido ? "encerrado" : "ativo",
+      ];
+    });
+    baixarCSV(`sifriyah-emprestimos-${todayISO()}.csv`, cabecalho, linhas);
   }
 
   function ativarNuvem() {
@@ -215,6 +272,14 @@ function AjustesTab({
           value={maxBackupsAutomaticos}
           onChange={(e) => setMaxBackupsAutomaticos(e.target.value)}
           placeholder="10"
+        />
+        <label style={labelStyle}>Reserva expira sozinha depois de quantos dias sem retirada (padrão: 3)</label>
+        <Input
+          type="number"
+          min="1"
+          value={diasExpiracaoReserva}
+          onChange={(e) => setDiasExpiracaoReserva(e.target.value)}
+          placeholder="3"
         />
         <Button style={{ alignSelf: "flex-start" }} onClick={salvarGeral}>
           Salvar
@@ -292,6 +357,13 @@ function AjustesTab({
           rows={3}
           style={{ ...inputBase, fontFamily: "'Source Serif 4', serif" }}
         />
+        <label style={labelStyle}>Mensagem de comprovante (enviada quando o empréstimo é quitado)</label>
+        <textarea
+          value={modeloRecibo}
+          onChange={(e) => setModeloRecibo(e.target.value)}
+          rows={3}
+          style={{ ...inputBase, fontFamily: "'Source Serif 4', serif" }}
+        />
         <div style={{ display: "flex", gap: 8 }}>
           <Button style={{ alignSelf: "flex-start" }} onClick={salvarGeral}>
             Salvar textos
@@ -302,6 +374,7 @@ function AjustesTab({
             onClick={() => {
               setModeloCobranca(MODELO_COBRANCA_PADRAO);
               setModeloRenovacao(MODELO_RENOVACAO_PADRAO);
+              setModeloRecibo(MODELO_RECIBO_PADRAO);
             }}
           >
             Restaurar padrão
@@ -591,6 +664,92 @@ function AjustesTab({
         )}
         {erroRestaurar && (
           <div style={{ fontSize: 12.5, color: COLORS.rust }}>{erroRestaurar}</div>
+        )}
+      </div>
+
+      <div
+        style={{
+          background: COLORS.card,
+          border: `1.5px solid ${COLORS.rule}`,
+          borderRadius: 10,
+          padding: 16,
+          marginTop: 16,
+          display: "flex",
+          flexDirection: "column",
+          gap: 10,
+        }}
+      >
+        <div style={{ fontFamily: "'Playfair Display', serif", fontWeight: 700, fontSize: 16 }}>
+          Exportar dados
+        </div>
+        <div style={{ fontSize: 12.5, color: COLORS.inkSoft }}>
+          Baixa uma planilha (CSV, abre no Excel/Google Sheets) com os dados de agora — diferente do
+          backup criptografado, que só o próprio Sifriyah consegue reabrir.
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <Button variant="subtle" style={{ padding: "8px 12px", fontSize: 13 }} onClick={exportarAcervoCSV}>
+            📥 Acervo (CSV)
+          </Button>
+          <Button variant="subtle" style={{ padding: "8px 12px", fontSize: 13 }} onClick={exportarPessoasCSV}>
+            📥 Pessoas (CSV)
+          </Button>
+          <Button variant="subtle" style={{ padding: "8px 12px", fontSize: 13 }} onClick={exportarEmprestimosCSV}>
+            📥 Empréstimos (CSV)
+          </Button>
+        </div>
+      </div>
+
+      <div
+        style={{
+          background: COLORS.card,
+          border: `1.5px solid ${COLORS.rule}`,
+          borderRadius: 10,
+          padding: 16,
+          marginTop: 16,
+          display: "flex",
+          flexDirection: "column",
+          gap: 10,
+        }}
+      >
+        <div style={{ fontFamily: "'Playfair Display', serif", fontWeight: 700, fontSize: 16 }}>
+          Log de auditoria
+        </div>
+        <div style={{ fontSize: 12.5, color: COLORS.inkSoft }}>
+          Registro de ações importantes (quem fez o quê) — útil se mais de uma conta administra esta
+          biblioteca. Só existe com a sincronização em nuvem ativada.
+        </div>
+        {!cloudConfig && (
+          <div style={{ fontSize: 12.5, color: COLORS.inkSoft }}>
+            Disponível só com a nuvem conectada (veja a seção "Sincronização entre aparelhos" acima).
+          </div>
+        )}
+        {cloudConfig && (
+          <>
+            <Button
+              variant="subtle"
+              style={{ alignSelf: "flex-start", padding: "8px 12px", fontSize: 13 }}
+              onClick={onCarregarAuditoria}
+              disabled={carregandoAuditoria}
+            >
+              {carregandoAuditoria ? "Carregando…" : "Atualizar log"}
+            </Button>
+            {!carregandoAuditoria && auditoria.length === 0 && (
+              <div style={{ fontSize: 12.5, color: COLORS.inkSoft }}>Nada registrado ainda.</div>
+            )}
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 280, overflowY: "auto" }}>
+              {auditoria.map((a) => (
+                <div
+                  key={a.id}
+                  style={{ border: `1px solid ${COLORS.rule}`, borderRadius: 8, padding: "8px 10px", background: "#fff", fontSize: 12.5 }}
+                >
+                  <div><b>{a.acao}</b>{a.detalhe ? " · " + a.detalhe : ""}</div>
+                  <div style={{ fontSize: 11, color: COLORS.inkSoft, fontFamily: "'JetBrains Mono', monospace", marginTop: 2 }}>
+                    {fmtDataHora(a.criadoEm)}{a.adminEmail ? " · " + a.adminEmail : ""}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </>
         )}
       </div>
 

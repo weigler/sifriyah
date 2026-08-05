@@ -4,6 +4,8 @@ function Stamp({ status }) {
     devolvido: { label: "DEVOLVIDO", color: COLORS.sage },
     atrasado: { label: "ATRASADO", color: COLORS.rust },
     emprestado: { label: "EMPRESTADO", color: COLORS.burgundy },
+    perdido: { label: "PERDIDO", color: COLORS.rust },
+    danificado: { label: "DANIFICADO", color: COLORS.rust },
   };
   const s = map[status];
   return (
@@ -249,6 +251,76 @@ function BotaoDevolver({ restante, descontoSugerido, diasRestantes, onConfirmar 
       <div style={{ display: "flex", gap: 8 }}>
         <Button style={{ padding: "6px 12px", fontSize: 12.5 }} onClick={() => onConfirmar(valorDesconto)}>
           Confirmar devolução
+        </Button>
+        <Button variant="ghost" style={{ padding: "6px 12px", fontSize: 12.5 }} onClick={() => setAberto(false)}>
+          Cancelar
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+// registra um exemplar como perdido ou danificado — encerra o empréstimo (igual devolver),
+// mas soma um custo de reposição ao valor devido e tira uma unidade do acervo desse livro
+function BotaoPerdidoDanificado({ custoSugerido, onConfirmar }) {
+  const [aberto, setAberto] = useState(false);
+  const [tipo, setTipo] = useState("perdido");
+  const [custo, setCusto] = useState(custoSugerido > 0 ? String(custoSugerido) : "");
+
+  if (!aberto) {
+    return (
+      <Button
+        variant="ghost"
+        style={{ padding: "7px 12px", fontSize: 13, color: COLORS.rust, borderColor: COLORS.rust }}
+        onClick={() => setAberto(true)}
+      >
+        Perdido/danificado
+      </Button>
+    );
+  }
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 6,
+        background: "#F7E3DA",
+        border: `1px solid ${COLORS.rust}`,
+        borderRadius: 8,
+        padding: 10,
+        width: "100%",
+      }}
+    >
+      <div style={{ display: "flex", gap: 14, fontSize: 12.5 }}>
+        <label style={{ display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
+          <input type="radio" checked={tipo === "perdido"} onChange={() => setTipo("perdido")} /> perdido
+        </label>
+        <label style={{ display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
+          <input type="radio" checked={tipo === "danificado"} onChange={() => setTipo("danificado")} /> danificado
+        </label>
+      </div>
+      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <label style={{ fontSize: 11.5, color: COLORS.inkSoft, whiteSpace: "nowrap" }}>custo de reposição (R$)</label>
+        <Input
+          type="number"
+          step="0.01"
+          min="0"
+          value={custo}
+          onChange={(e) => setCusto(e.target.value)}
+          style={{ width: 90, padding: "5px 8px", fontSize: 12.5 }}
+        />
+      </div>
+      <div style={{ fontSize: 11.5, color: COLORS.rust }}>
+        Isso encerra o empréstimo, soma esse valor ao total devido pela pessoa, e tira uma unidade do
+        acervo desse livro (dá pra devolver a unidade depois, editando o livro em Acervo).
+      </div>
+      <div style={{ display: "flex", gap: 8 }}>
+        <Button
+          style={{ padding: "6px 12px", fontSize: 12.5, background: COLORS.rust, border: "none" }}
+          onClick={() => onConfirmar(tipo, parseFloat(custo) || 0)}
+        >
+          Confirmar
         </Button>
         <Button variant="ghost" style={{ padding: "6px 12px", fontSize: 12.5 }} onClick={() => setAberto(false)}>
           Cancelar

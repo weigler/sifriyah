@@ -21,7 +21,34 @@ function FinanceiroTab({ emprestimos, cobrancas, pessoaById, livroById, totalPag
     .map(([livroId, qtd]) => ({ livro: livroById(livroId), qtd }))
     .filter((r) => r.livro)
     .sort((a, b) => b.qtd - a.qtd)
-    .slice(0, 5);
+    .slice(0, 10);
+
+  // ranking de leitores: quem mais pegou livro emprestado (contagem de empréstimos, ativos ou já
+  // devolvidos) — pensado pra engajamento num grupo pequeno, não é sobre dinheiro
+  const contagemPorPessoa = {};
+  emprestimos.forEach((e) => {
+    if (!e.pessoaId) return;
+    contagemPorPessoa[e.pessoaId] = (contagemPorPessoa[e.pessoaId] || 0) + 1;
+  });
+  const rankingPessoas = Object.entries(contagemPorPessoa)
+    .map(([pessoaId, qtd]) => ({ pessoa: pessoaById(pessoaId), qtd }))
+    .filter((r) => r.pessoa)
+    .sort((a, b) => b.qtd - a.qtd)
+    .slice(0, 10);
+
+  // ranking de categorias mais populares — soma os empréstimos dos livros de cada categoria,
+  // útil pra decidir que tipo de livro comprar mais
+  const contagemPorCategoria = {};
+  emprestimos.forEach((e) => {
+    const livro = livroById(e.livroId);
+    const cat = livro && livro.categoria ? livro.categoria : null;
+    if (!cat) return;
+    contagemPorCategoria[cat] = (contagemPorCategoria[cat] || 0) + 1;
+  });
+  const rankingCategorias = Object.entries(contagemPorCategoria)
+    .map(([categoria, qtd]) => ({ categoria, qtd }))
+    .sort((a, b) => b.qtd - a.qtd)
+    .slice(0, 8);
 
   function exportarPDF() {
     const janela = window.open("", "_blank");
@@ -125,6 +152,61 @@ function FinanceiroTab({ emprestimos, cobrancas, pessoaById, livroById, totalPag
                 }}
               >
                 <span>{i + 1}. {r.livro.titulo}</span>
+                <span style={{ fontFamily: "'JetBrains Mono', monospace", color: COLORS.gold, fontWeight: 600 }}>
+                  {r.qtd}x
+                </span>
+              </div>
+            ))}
+          </div>
+        </Section>
+      )}
+
+      {rankingPessoas.length > 0 && (
+        <Section eyebrow="Ranking" title="Quem mais leu">
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {rankingPessoas.map((r, i) => (
+              <div
+                key={r.pessoa.id}
+                style={{
+                  background: COLORS.card,
+                  border: `1px solid ${COLORS.rule}`,
+                  borderRadius: 8,
+                  padding: "9px 14px",
+                  display: "flex",
+                  justifyContent: "space-between",
+                  fontSize: 13.5,
+                }}
+              >
+                <span>{i + 1}. {nomeCompleto(r.pessoa)}</span>
+                <span style={{ fontFamily: "'JetBrains Mono', monospace", color: COLORS.gold, fontWeight: 600 }}>
+                  {r.qtd} livro{r.qtd > 1 ? "s" : ""}
+                </span>
+              </div>
+            ))}
+          </div>
+        </Section>
+      )}
+
+      {rankingCategorias.length > 0 && (
+        <Section eyebrow="Ranking" title="Categorias mais populares">
+          <div style={{ fontSize: 12.5, color: COLORS.inkSoft, marginBottom: 10 }}>
+            Bom indicativo de que tipo de livro comprar mais.
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {rankingCategorias.map((r, i) => (
+              <div
+                key={r.categoria}
+                style={{
+                  background: COLORS.card,
+                  border: `1px solid ${COLORS.rule}`,
+                  borderRadius: 8,
+                  padding: "9px 14px",
+                  display: "flex",
+                  justifyContent: "space-between",
+                  fontSize: 13.5,
+                }}
+              >
+                <span>{i + 1}. {r.categoria}</span>
                 <span style={{ fontFamily: "'JetBrains Mono', monospace", color: COLORS.gold, fontWeight: 600 }}>
                   {r.qtd}x
                 </span>

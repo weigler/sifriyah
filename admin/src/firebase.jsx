@@ -265,6 +265,52 @@ async function nuvemLimparPedidosFilaAntigos(firebaseConfig, docId) {
   await batch.commit();
 }
 
+const DIAS_EXPIRAR_RESERVA_PADRAO = 3;
+// reservas pendentes (tipo "reserva", ainda não atendidas) enviadas pela vitrine que passaram do
+// prazo sem a pessoa ser atendida: marca como atendida (com expirado:true) pra sumir sozinha da
+// lista de pendentes, sem o admin precisar lembrar de descartar uma por uma. Busca só por
+// "biblioteca" (igual nuvemOuvirPedidosFila) e filtra o resto no cliente, pra não depender de
+// índice composto nenhum no Firestore.
+async function nuvemExpirarReservasAntigas(firebaseConfig, docId, dias) {
+  const db = await inicializarFirebase(firebaseConfig);
+  const snap = await db.collection("sifriyah_pedidos_fila").where("biblioteca", "==", docId).get();
+  const limite = Date.now() - (dias || DIAS_EXPIRAR_RESERVA_PADRAO) * 24 * 60 * 60 * 1000;
+  const paraExpirar = [];
+  snap.forEach((doc) => {
+    const d = doc.data();
+    if (d.tipo === "reserva" && !d.atendido && d.criadoEm && d.criadoEm < limite) paraExpirar.push(doc.ref);
+  });
+  if (paraExpirar.length === 0) return 0;
+  const batch = db.batch();
+  paraExpirar.forEach((ref) => batch.update(ref, { atendido: true, atendidoEm: Date.now(), expirado: true }));
+  await batch.commit();
+  return paraExpirar.length;
+}
+
+// ---- Log de auditoria (opcional) — útil quando mais de uma conta administra a mesma biblioteca;
+// cada linha é só um registro do que aconteceu, sem edição ou exclusão pelo app depois ----
+async function nuvemRegistrarAuditoria(firebaseConfig, docId, acao, detalhe, adminEmail) {
+  const db = await inicializarFirebase(firebaseConfig);
+  await db.collection("sifriyah_auditoria").add({
+    biblioteca: docId,
+    acao,
+    detalhe: detalhe || "",
+    adminEmail: adminEmail || "",
+    criadoEm: Date.now(),
+  });
+}
+const MAX_AUDITORIA_LISTAR = 200;
+// mesma estratégia de nuvemListarBackups: filtra só por "biblioteca" e ordena no cliente,
+// pra não exigir nenhum índice composto configurado manualmente no Firestore
+async function nuvemListarAuditoria(firebaseConfig, docId) {
+  const db = await inicializarFirebase(firebaseConfig);
+  const snap = await db.collection("sifriyah_auditoria").where("biblioteca", "==", docId).get();
+  const lista = [];
+  snap.forEach((doc) => lista.push({ id: doc.id, ...doc.data() }));
+  lista.sort((a, b) => (b.criadoEm || 0) - (a.criadoEm || 0));
+  return lista.slice(0, MAX_AUDITORIA_LISTAR);
+}
+
 // ---- Backups (cópias completas com data/hora, separadas do salvamento "ao vivo") ----
 async function nuvemSalvarBackup(firebaseConfig, docId, tipo, secoesBlobs, criadoEm) {
   const db = await inicializarFirebase(firebaseConfig);

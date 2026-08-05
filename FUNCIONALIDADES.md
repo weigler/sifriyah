@@ -19,14 +19,20 @@ Todo o estado do app vive em memória (`useState`) em quatro grandes coleções,
 
 ```
 { id, titulo, autor, paginas, dataAquisicao, categoria, nivel,
-  valorSemanal, valorSemanaExtra, quantidade, limiteSemanas,
+  valorSemanal, valorSemanaExtra, valorReposicao, quantidade, limiteSemanas,
   sinopse, tags: [], linkExterno, capaUrl }
 ```
 
 - `valorSemanal` é o preço-base de aluguel por semana, usado para sugerir o valor de um empréstimo novo (`valorSemanal × limiteSemanas`) e para calcular o desconto de devolução antecipada.
 - `valorSemanaExtra` é o preço de cada semana **além** do combinado original — usado tanto na renovação manual ("+1 semana") quanto no cálculo automático de multa por atraso. Se não estiver preenchido, todo o sistema cai de volta para `valorSemanal` como aproximação.
+- `valorReposicao` (opcional) é o custo sugerido quando um exemplar desse livro é marcado como perdido ou danificado (ver [Perdido/danificado](#perdido-ou-danificado)). Se não preenchido, o campo de custo aparece em branco na hora de marcar, e o admin digita o valor manualmente.
 - `quantidade` é o número de unidades físicas daquele título; o sistema permite empréstimos simultâneos até esse limite (`unidadesEmprestadas(livroId) < quantidade`).
 - `nivel` é um enum fechado: `Infantil, Juvenil, Iniciante, Intermediário, Avançado, Acadêmico`.
+
+Duplicidade: ao cadastrar um livro novo, o formulário compara título + autor (normalizados,
+ignorando maiúsculas/espaços) contra o acervo já existente. Se achar uma correspondência, mostra
+um aviso e troca o botão para "Cadastrar mesmo assim" — precisa de um segundo clique pra confirmar.
+Não bloqueia (pode ser mesmo título de edições diferentes), só evita duplicar sem querer.
 
 ### Pessoa
 
@@ -40,10 +46,15 @@ Todo o estado do app vive em memória (`useState`) em quatro grandes coleções,
 
 ```
 { id, livroId, pessoaId, dataEmprestimo, prazo, valorCombinado,
-  pagamentos: [{ id, valor, data }], devolvido, dataDevolucao, multaAnulada }
+  pagamentos: [{ id, valor, data }], devolvido, dataDevolucao, multaAnulada,
+  statusFinal, custoReposicao }
 ```
 
-`valorCombinado` é um número simples, não uma fórmula armazenada — cada evento que altera o preço (criação, renovação, desconto de devolução) escreve um novo valor direto no campo. O histórico de *como* se chegou a esse número não é guardado; só o resultado.
+`valorCombinado` é um número simples, não uma fórmula armazenada — cada evento que altera o preço (criação, renovação, desconto de devolução, custo de reposição) escreve um novo valor direto no campo. O histórico de *como* se chegou a esse número não é guardado; só o resultado.
+
+`statusFinal` só existe quando `devolvido: true` e o encerramento não foi uma devolução normal —
+vale `"perdido"` ou `"danificado"` (ver seção abaixo). `custoReposicao` guarda o valor que foi
+somado ao `valorCombinado` nesse caso, só pra exibição (o valor em si já está embutido no total).
 
 ### Fila (`filas`)
 
@@ -63,7 +74,10 @@ Registro de auditoria: toda vez que uma mensagem de cobrança, lembrete de prazo
 
 ### Config (`ajustes`)
 
-Chave Pix, nome do recebedor, WhatsApp de contato geral, link da vitrine, promoção ativa (`{ ativa, descricao, validoAte, desconto }`) e os três modelos de mensagem editáveis (`modeloCobranca`, `modeloRenovacao`, `modeloConfirmacao`).
+Chave Pix, nome do recebedor, WhatsApp de contato geral, link da vitrine, quantos dias uma
+reserva pendente demora pra expirar sozinha (`diasExpiracaoReserva`, padrão 3), promoção ativa
+(`{ ativa, descricao, validoAte, desconto }`) e os quatro modelos de mensagem editáveis
+(`modeloCobranca`, `modeloRenovacao`, `modeloConfirmacao`, `modeloRecibo`).
 
 ---
 
@@ -103,6 +117,21 @@ Por ser puramente derivada (não persistida), a multa nunca fica dessincronizada
 2. **Débito pendente** (`pessoaTemDebito`) — soma `valorCombinado + multa − totalPago` de **todos** os empréstimos da pessoa (devolvidos ou não); se qualquer um estiver positivo, bloqueia até quitar.
 
 **Total pago** (`totalPago`): soma simples do array `pagamentos` de um empréstimo — pagamentos parciais são permitidos e ficam listados individualmente (com opção de remover um lançamento errado).
+
+**Aba "devedores"** (filtro dentro de Empréstimos): mostra todo empréstimo com `restante > 0` — **independente de já devolvido ou não**. É diferente do bloqueio de débito acima (que olha a pessoa como um todo): aqui é por empréstimo, então dá pra ver exatamente qual livro ainda tem valor em aberto, mesmo que já tenha voltado pra estante. Quando há alguém devendo, aparece um aviso no topo da aba (igual ao de atrasados) com a contagem de pessoas e o valor total em aberto; a lista, nesse filtro, ordena do maior débito pro menor.
+
+### Perdido ou danificado
+
+Alternativa a "marcar devolvido" (`marcarPerdidoDanificado`), disponível em qualquer empréstimo
+ativo: encerra o empréstimo do mesmo jeito (`devolvido: true`, `dataDevolucao` preenchida), mas
+grava `statusFinal: "perdido"` ou `"danificado"` e soma o custo de reposição informado (sugerido
+a partir de `livro.valorReposicao`, editável na hora) direto ao `valorCombinado` do empréstimo —
+reaproveitando o mecanismo de dívida já existente, sem precisar de um cálculo separado: esse
+custo aparece em "falta pagar", entra na aba "devedores", nos totais do Financeiro etc., igual a
+qualquer outro valor pendente. Também tira uma unidade de `quantidade` do livro (pra sumir da
+prateleira); se o exemplar aparecer depois, o admin aumenta a quantidade de novo manualmente
+editando o livro. O selo do empréstimo (`Stamp`) mostra "PERDIDO" ou "DANIFICADO" em vez de
+"DEVOLVIDO" nesse caso.
 
 ---
 
@@ -158,22 +187,29 @@ Restaurar (`restaurarBackup`) decifra as 4 seções do backup escolhido com a se
 
 ---
 
-## Pedidos vindos da vitrine pública: fila e reserva
+## Pedidos vindos da vitrine pública: fila, reserva e sugestão
 
-A vitrine pública (`catalogo/index.html`) não escreve diretamente nas coleções privadas — ela só cria documentos avulsos em `sifriyah_pedidos_fila`, com um campo `tipo` (`"fila"` ou `"reserva"`) que os diferencia:
+A vitrine pública (`catalogo/index.html`) não escreve diretamente nas coleções privadas — ela só cria documentos avulsos em `sifriyah_pedidos_fila`, com um campo `tipo` (`"fila"`, `"reserva"` ou `"sugestao"`) que os diferencia:
 
 ```
-{ biblioteca, tipo, livroId, tituloLivro, codigoUsuario, nome, sobrenome, telefone,
-  criadoEm, atendido, atendidoEm }
+{ biblioteca, tipo, livroId, tituloLivro, autorSugerido, codigoUsuario, nome, sobrenome,
+  telefone, criadoEm, atendido, atendidoEm, expirado }
 ```
 
-Quem visita o catálogo pode se identificar de duas formas: pelo `codigoUsuario` (se já é cadastrado) ou por nome + telefone (se ainda não é). O formulário é o mesmo para os dois tipos de pedido — só muda o rótulo do botão e o `tipo` gravado, conforme o livro esteja disponível (reserva) ou emprestado (fila).
+Quem visita o catálogo pode se identificar de duas formas: pelo `codigoUsuario` (se já é cadastrado) ou por nome + telefone (se ainda não é). O formulário de fila/reserva é o mesmo para os dois tipos — só muda o rótulo do botão e o `tipo` gravado, conforme o livro esteja disponível (reserva) ou emprestado (fila). Sugestão de livro é um formulário separado, mais simples (título, autor opcional, identificação opcional), que usa a mesma coleção com `tipo: "sugestao"` e `tituloLivro`/`autorSugerido` no lugar de `livroId` (que não existe, já que o livro sugerido ainda não está no acervo).
 
-No app administrativo, a aba **Fila** ouve essa coleção em tempo real e separa visualmente os dois tipos em duas listas. **Aceitar** um pedido tem efeito diferente conforme o tipo:
+No app administrativo, a aba **Fila** ouve essa coleção em tempo real e separa visualmente os três tipos em listas próprias. **Aceitar** um pedido tem efeito diferente conforme o tipo:
 - **Fila**: tenta casar `codigoUsuario` com uma pessoa existente (ou o nome, se veio sem código); se achar, cria de verdade uma entrada na fila digital daquele livro (criando a pessoa também, se for a primeira vez que aparece); se não achar ninguém e não veio nome junto, mostra um erro em vez de falhar silenciosamente.
-- **Reserva**: não existe um conceito de "reserva persistida" no sistema — aceitar só marca o pedido como atendido (o combinado de retirada é feito por fora, diretamente com a pessoa).
+- **Reserva**: não existe um conceito de "reserva persistida" no sistema — aceitar só marca o pedido como atendido (o combinado de retirada é feito por fora, diretamente com a pessoa). Ver "Expiração de reservas" abaixo.
+- **Sugestão**: "aceitar" (rotulado "marcar como vista" na interface) só marca o pedido como atendido — não cadastra o livro automaticamente. Se a biblioteca decidir comprar, o cadastro é feito manualmente pela aba Acervo, como qualquer outro livro.
 
 Pedidos atendidos não somem na hora — ficam guardados por 60 dias (limpeza automática, `nuvemLimparPedidosFilaAntigos`, rodada uma vez por sessão) como histórico de curto prazo, e só então são apagados de vez.
+
+### Expiração de reservas
+
+Como não existe reserva persistida (a "disponibilidade" de um livro na vitrine só olha
+empréstimos de verdade, nunca pedidos pendentes), um pedido de reserva esquecido na fila de
+pendentes não trava nada tecnicamente — mas continua poluindo a lista que o admin precisa revisar. `nuvemExpirarReservasAntigas` roda uma vez por sessão (junto com a limpeza de pedidos antigos) e marca como atendida, com `expirado: true`, toda reserva pendente (`tipo: "reserva"`, `atendido: false`) criada há mais de `config.diasExpiracaoReserva` dias (padrão 3, editável em Ajustes). A consulta filtra só por `biblioteca` no Firestore e faz o resto no cliente, de propósito, pra não exigir nenhum índice composto configurado manualmente no Console.
 
 ### Notificações
 
@@ -183,9 +219,9 @@ Usa a Notification API nativa do navegador — não é push (não funciona com o
 
 ## Mensagens via WhatsApp
 
-Todas as mensagens (confirmação de empréstimo, cobrança, lembrete de prazo, envio de código de usuário) são geradas client-side e abertas via link `https://wa.me/<telefone>?text=<mensagem>` — não há integração com a API oficial do WhatsApp, é só um deep link. Três dos quatro textos são editáveis pelo admin em Ajustes, com um pequeno mecanismo de template (`preencherModelo`): o texto guardado tem placeholders `{nome}`, `{livro}`, `{valor}`, `{prazo}`, `{dataInicio}`, `{dataFim}`, `{pix}`, substituídos por regex na hora de montar a mensagem final. Se o admin não personalizou um modelo, cada função tem um texto padrão embutido no código.
+Todas as mensagens (confirmação de empréstimo, cobrança, lembrete de prazo, comprovante de quitação, envio de código de usuário) são geradas client-side e abertas via link `https://wa.me/<telefone>?text=<mensagem>` — não há integração com a API oficial do WhatsApp, é só um deep link. Quatro dos cinco textos são editáveis pelo admin em Ajustes, com um pequeno mecanismo de template (`preencherModelo`): o texto guardado tem placeholders `{nome}`, `{livro}`, `{valor}`, `{prazo}`, `{dataInicio}`, `{dataFim}`, `{pix}`, substituídos por regex na hora de montar a mensagem final. Se o admin não personalizou um modelo, cada função tem um texto padrão embutido no código.
 
-A mensagem de confirmação de empréstimo é a única que sempre aparece (não depende de haver saldo pendente); cobrança e lembrete de prazo só aparecem quando há algo a cobrar.
+A mensagem de confirmação de empréstimo é a única que sempre aparece (não depende de haver saldo pendente); cobrança e lembrete de prazo só aparecem quando há algo a cobrar. O botão "Enviar comprovante" (`modeloRecibo`) aparece quando o empréstimo está com saldo zerado e algum pagamento já foi registrado (`restante === 0 && totalPago > 0`) — funciona tanto pra empréstimo já devolvido quanto pra um que a pessoa quitou mas ainda está com o livro.
 
 ---
 
@@ -198,3 +234,33 @@ A busca de texto livre casa contra título, autor, **nível de leitura e tags** 
 O documento público é escrito pelo app administrativo (`nuvemSalvarPublico`), com uma projeção deliberadamente reduzida dos dados reais — nem todo campo de um livro é publicado, e nenhum dado de pessoa, empréstimo ou financeiro sai daí. A escrita só acontece enquanto o app admin está desbloqueado e sincronizado (efeito guardado por `unlocked && senhaAtual && cloudConfig`).
 
 Pré-cadastro (nome/telefone/e-mail, sem exigir login) grava em `sifriyah_precadastros` e aparece para revisão na aba Pessoas do admin, que pode "importar" (virar uma pessoa de verdade, com código de usuário gerado na hora) ou descartar.
+
+---
+
+## Ranking de leitura
+
+Três listas, todas dentro da aba Financeiro, calculadas a partir de `emprestimos` (contagem simples, sem nenhum estado próprio guardado):
+- **Livros mais emprestados** (top 10): conta empréstimos por `livroId`.
+- **Quem mais leu** (top 10): conta empréstimos por `pessoaId` — pensado como um elemento de engajamento pro grupo, não é sobre dinheiro.
+- **Categorias mais populares** (top 8): soma os empréstimos dos livros de cada `categoria`, útil como indicativo de que tipo de livro comprar mais.
+
+Todas contam empréstimos ativos e já devolvidos juntos (histórico completo, não só o momento atual).
+
+---
+
+## Exportar dados (CSV)
+
+Em Ajustes, três botões baixam uma planilha (`baixarCSV`, com BOM UTF-8 pra acentuação abrir certo no Excel) com o estado atual — diferente do backup criptografado, que só o próprio Sifriyah consegue reabrir:
+- **Acervo**: título, autor, categoria, nível, unidades, valores (semanal/extra/reposição), páginas, data de aquisição.
+- **Pessoas**: nome, sobrenome, telefone, e-mail, código de usuário.
+- **Empréstimos**: livro, pessoa, datas, situação (`statusFinal` quando houver), valor combinado, total pago, status (ativo/encerrado).
+
+Gerado inteiramente no navegador (sem passar pelo Firestore de novo) — é só uma leitura formatada do estado já carregado em memória.
+
+---
+
+## Log de auditoria
+
+Coleção `sifriyah_auditoria`, só existe com a nuvem conectada. Cada linha é `{ biblioteca, acao, detalhe, adminEmail, criadoEm }`, escrita por `auditar()` (best-effort — nunca trava a ação que está sendo registrada se a escrita falhar) nos pontos que envolvem dado sensível ou some do sistema: empréstimo registrado, devolução, perdido/danificado, pagamento registrado, pessoa removida, livro removido, senha trocada, backup restaurado, reset completo. As regras do Firestore permitem só `read`/`create` pra contas autenticadas — nem o próprio app tem como editar ou apagar uma linha já escrita (ver `firestore.rules`).
+
+A listagem (`nuvemListarAuditoria`) busca só por `biblioteca` e ordena as últimas 200 entradas no cliente — mesma estratégia de `nuvemListarBackups` — pra não exigir índice composto configurado manualmente no Console. Pensado pra quando mais de uma conta administra a mesma biblioteca (ver preparo pro IPN Books no `CONTINUIDADE.md`); com um admin só, serve mais como um histórico de "o que mudou e quando".

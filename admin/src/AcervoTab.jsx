@@ -80,6 +80,7 @@ function AcervoTab({
   const [capaUrl, setCapaUrl] = useState("");
   const [valorSemanal, setValorSemanal] = useState("");
   const [valorSemanaExtra, setValorSemanaExtra] = useState("");
+  const [valorReposicao, setValorReposicao] = useState("");
   const [limiteSemanas, setLimiteSemanas] = useState("");
   const [quantidade, setQuantidade] = useState("1");
   const [categoria, setCategoria] = useState("");
@@ -97,6 +98,7 @@ function AcervoTab({
   const [editCapaUrl, setEditCapaUrl] = useState("");
   const [editValorSemanal, setEditValorSemanal] = useState("");
   const [editValorSemanaExtra, setEditValorSemanaExtra] = useState("");
+  const [editValorReposicao, setEditValorReposicao] = useState("");
   const [editLimiteSemanas, setEditLimiteSemanas] = useState("");
   const [editQuantidade, setEditQuantidade] = useState("1");
   const [editCategoria, setEditCategoria] = useState("");
@@ -108,6 +110,20 @@ function AcervoTab({
   const [avisoCapaEdit, setAvisoCapaEdit] = useState("");
   const [filaSelecionado, setFilaSelecionado] = useState({}); // { [livroId]: pessoaId }
   const [filaNomeNovo, setFilaNomeNovo] = useState({}); // { [livroId]: "nome pra cadastrar na hora" }
+  const [confirmarDuplicata, setConfirmarDuplicata] = useState(false);
+
+  function normalizarTexto(s) {
+    return (s || "").trim().toLowerCase();
+  }
+  // mesmo título + mesmo autor já cadastrado — avisa antes de deixar cadastrar de novo sem querer
+  const duplicata =
+    titulo.trim() && autor.trim()
+      ? livros.find((l) => normalizarTexto(l.titulo) === normalizarTexto(titulo) && normalizarTexto(l.autor) === normalizarTexto(autor))
+      : null;
+
+  useEffect(() => {
+    setConfirmarDuplicata(false);
+  }, [titulo, autor]);
 
   function filaDoLivro(livroId) {
     return filas.filter((f) => f.livroId === livroId).sort((a, b) => (a.ordem ?? a.criadoEm) - (b.ordem ?? b.criadoEm));
@@ -145,6 +161,7 @@ function AcervoTab({
     setEditCapaUrl(l.capaUrl || "");
     setEditValorSemanal(l.valorSemanal || "");
     setEditValorSemanaExtra(l.valorSemanaExtra || "");
+    setEditValorReposicao(l.valorReposicao || "");
     setEditLimiteSemanas(l.limiteSemanas || "");
     setEditQuantidade(String(l.quantidade || 1));
     setEditCategoria(l.categoria || "");
@@ -162,6 +179,7 @@ function AcervoTab({
       capaUrl: editCapaUrl,
       valorSemanal: editValorSemanal,
       valorSemanaExtra: editValorSemanaExtra,
+      valorReposicao: editValorReposicao,
       limiteSemanas: editLimiteSemanas,
       quantidade: editQuantidade,
       categoria: editCategoria,
@@ -255,6 +273,16 @@ function AcervoTab({
               style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", fontSize: 13 }}
             />
           </CampoCol>
+          <CampoCol label="Custo de reposição">
+            <Input
+              type="number"
+              step="0.01"
+              placeholder="se perdido"
+              value={valorReposicao}
+              onChange={(e) => setValorReposicao(e.target.value)}
+              style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", fontSize: 13 }}
+            />
+          </CampoCol>
         </div>
 
         {/* 6 — Sinopse */}
@@ -304,11 +332,31 @@ function AcervoTab({
           </Button>
         </div>
         {avisoCapa && <div style={{ fontSize: 12, color: COLORS.inkSoft }}>{avisoCapa}</div>}
+        {duplicata && (
+          <div
+            style={{
+              fontSize: 12.5,
+              color: COLORS.rust,
+              background: "#F7E3DA",
+              border: `1px solid ${COLORS.rust}`,
+              borderRadius: 6,
+              padding: "8px 10px",
+            }}
+          >
+            ⚠️ Já existe <b>{duplicata.titulo}</b> de {duplicata.autor} cadastrado
+            {duplicata.quantidade > 1 ? ` (${duplicata.quantidade} unidades)` : ""}. Talvez seja melhor aumentar a
+            quantidade do livro existente em vez de cadastrar de novo.
+          </div>
+        )}
         <Button
           style={{ alignSelf: "flex-start" }}
           disabled={!titulo.trim() || !autor.trim()}
           onClick={() => {
             if (!titulo.trim() || !autor.trim()) return;
+            if (duplicata && !confirmarDuplicata) {
+              setConfirmarDuplicata(true);
+              return;
+            }
             onAdd({
               titulo,
               autor,
@@ -317,6 +365,7 @@ function AcervoTab({
               capaUrl,
               valorSemanal,
               valorSemanaExtra,
+              valorReposicao,
               limiteSemanas,
               quantidade,
               categoria,
@@ -332,6 +381,7 @@ function AcervoTab({
             setCapaUrl("");
             setValorSemanal("");
             setValorSemanaExtra("");
+            setValorReposicao("");
             setLimiteSemanas("");
             setQuantidade("1");
             setCategoria("");
@@ -339,9 +389,10 @@ function AcervoTab({
             setSinopse("");
             setLinkExterno("");
             setTagsSelecionadas([]);
+            setConfirmarDuplicata(false);
           }}
         >
-          Adicionar ao acervo
+          {duplicata && !confirmarDuplicata ? "Cadastrar mesmo assim" : "Adicionar ao acervo"}
         </Button>
       </div>
 
@@ -425,6 +476,16 @@ function AcervoTab({
                         placeholder="semanas"
                         value={editLimiteSemanas}
                         onChange={(e) => setEditLimiteSemanas(e.target.value)}
+                        style={{ width: "100%", boxSizing: "border-box", padding: "7px 10px", fontSize: 13 }}
+                      />
+                    </CampoCol>
+                    <CampoCol label="Custo de reposição">
+                      <Input
+                        type="number"
+                        step="0.01"
+                        placeholder="se perdido"
+                        value={editValorReposicao}
+                        onChange={(e) => setEditValorReposicao(e.target.value)}
                         style={{ width: "100%", boxSizing: "border-box", padding: "7px 10px", fontSize: 13 }}
                       />
                     </CampoCol>

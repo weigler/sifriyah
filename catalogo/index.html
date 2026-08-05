@@ -250,6 +250,48 @@
     color: #fff;
   }
   #precadastroMsg { font-size: 13px; margin-top: 10px; }
+  #sugestao {
+    max-width: 480px;
+    margin: 20px auto 0;
+    padding: 0 16px;
+  }
+  #sugestao .caixa {
+    background: #FBF7EC;
+    border: 1.5px solid #D8CBB0;
+    border-radius: 10px;
+    padding: 20px;
+  }
+  #sugestao h2 {
+    font-family: 'Playfair Display', Georgia, serif;
+    font-size: 18px;
+    margin: 0 0 4px;
+  }
+  #sugestao p { font-size: 13px; color: #5B4E3F; margin: 0 0 14px; }
+  #sugestao input {
+    width: 100%;
+    font-family: 'Source Serif 4', Georgia, serif;
+    font-size: 14px;
+    padding: 9px 11px;
+    border-radius: 6px;
+    border: 1.5px solid #D8CBB0;
+    background: #fff;
+    box-sizing: border-box;
+    margin-bottom: 8px;
+  }
+  #sugestao .linha { display: flex; gap: 8px; }
+  #sugestao .linha input { flex: 1; }
+  #sugestao button {
+    font-family: 'Source Serif 4', Georgia, serif;
+    font-weight: 600;
+    font-size: 14px;
+    padding: 10px 16px;
+    border-radius: 6px;
+    border: none;
+    cursor: pointer;
+    background: #B8933E;
+    color: #fff;
+  }
+  #sugestaoMsg { font-size: 13px; margin-top: 10px; }
 </style>
 </head>
 <body>
@@ -288,6 +330,22 @@
     <input type="email" id="pcEmail" placeholder="E-mail (opcional)">
     <button id="pcEnviar">Enviar meus dados</button>
     <div id="precadastroMsg"></div>
+  </div>
+</div>
+
+<div id="sugestao">
+  <div class="caixa">
+    <h2>Não achou o que procurava?</h2>
+    <p>Sugere um título que a biblioteca ainda não tem — sem compromisso, é só pra ajudar a decidir a próxima compra.</p>
+    <input type="text" id="sgTitulo" placeholder="Título do livro">
+    <input type="text" id="sgAutor" placeholder="Autor (se souber)">
+    <input type="text" id="sgCodigo" placeholder="Seu código de usuário (se já tiver, opcional)">
+    <div class="linha">
+      <input type="text" id="sgNome" placeholder="Seu nome (opcional)">
+      <input type="text" id="sgTelefone" placeholder="Celular (opcional)">
+    </div>
+    <button id="sgEnviar">Enviar sugestão</button>
+    <div id="sugestaoMsg"></div>
   </div>
 </div>
 
@@ -552,6 +610,47 @@ document.getElementById("pcEnviar").addEventListener("click", async () => {
     document.getElementById("pcSobrenome").value = "";
     document.getElementById("pcTelefone").value = "";
     document.getElementById("pcEmail").value = "";
+  } catch (err) {
+    msg.style.color = "#9C4A2C";
+    msg.textContent = "Não consegui enviar agora. Tenta de novo em instantes.";
+    console.error(err);
+  }
+});
+
+document.getElementById("sgEnviar").addEventListener("click", async () => {
+  const titulo = document.getElementById("sgTitulo").value.trim();
+  const autor = document.getElementById("sgAutor").value.trim();
+  const codigo = document.getElementById("sgCodigo").value.trim().toUpperCase();
+  const nome = document.getElementById("sgNome").value.trim();
+  const telefone = document.getElementById("sgTelefone").value.trim();
+  const msg = document.getElementById("sugestaoMsg");
+
+  if (!titulo) {
+    msg.style.color = "#9C4A2C";
+    msg.textContent = "Digita ao menos o título do livro.";
+    return;
+  }
+  try {
+    const db = firebase.firestore();
+    await db.collection("sifriyah_pedidos_fila").add({
+      biblioteca: DOC_ID,
+      tipo: "sugestao",
+      tituloLivro: titulo,
+      autorSugerido: autor || null,
+      codigoUsuario: codigo || null,
+      nome: nome || null,
+      sobrenome: null,
+      telefone: telefone || null,
+      criadoEm: Date.now(),
+      atendido: false,
+    });
+    msg.style.color = "#4B6B4A";
+    msg.textContent = "Sugestão enviada, obrigado!";
+    document.getElementById("sgTitulo").value = "";
+    document.getElementById("sgAutor").value = "";
+    document.getElementById("sgCodigo").value = "";
+    document.getElementById("sgNome").value = "";
+    document.getElementById("sgTelefone").value = "";
   } catch (err) {
     msg.style.color = "#9C4A2C";
     msg.textContent = "Não consegui enviar agora. Tenta de novo em instantes.";

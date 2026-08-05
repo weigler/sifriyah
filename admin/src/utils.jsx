@@ -121,6 +121,26 @@ function calcularMulta(emp, livro, config) {
   return semanas * valorSemana;
 }
 
+// gera e baixa um arquivo CSV a partir de um cabeçalho e uma lista de linhas (arrays de valores) —
+// usado nos botões de exportar dados em Ajustes. Inclui um BOM no início pra acentos abrirem
+// certo quando o arquivo é aberto no Excel.
+function baixarCSV(nomeArquivo, cabecalho, linhas) {
+  function escaparCampo(v) {
+    const s = v === null || v === undefined ? "" : String(v);
+    return /[",;\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  }
+  const conteudo = [cabecalho, ...linhas].map((linha) => linha.map(escaparCampo).join(",")).join("\r\n");
+  const blob = new Blob(["\uFEFF" + conteudo], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = nomeArquivo;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 // calcula o valor do empréstimo a partir do valor semanal x limite de semanas do livro,
 // já aplicando o desconto da promoção ativa (se houver e ainda estiver válida)
 function calcularValorSugerido(livro, promocao) {

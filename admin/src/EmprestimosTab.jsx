@@ -17,6 +17,7 @@ function EmprestimosTab({
   onRemoverPagamento,
   onRemover,
   onRegistrarCobranca,
+  onMarcarPerdidoDanificado,
 }) {
   const [showForm, setShowForm] = useState(false);
   const [livroId, setLivroId] = useState("");
@@ -170,20 +171,51 @@ function EmprestimosTab({
     });
   }
 
+  function mensagemRecibo(emp, livro, pessoa) {
+    const modelo =
+      config.modeloRecibo ||
+      `Oi {nome}! ✅ Recebido! O empréstimo do livro "{livro}" está quitado — valor total: {valor}. Muito obrigado! 📚`;
+    return preencherModelo(modelo, {
+      nome: pessoa ? pessoa.nome : "",
+      livro: livro ? livro.titulo : "",
+      valor: fmtMoney(emp.valorCombinado || 0),
+      prazo: fmtDate(emp.prazo),
+      dataInicio: fmtDate(emp.dataEmprestimo),
+      dataFim: fmtDate(emp.prazo),
+      pix: "",
+    });
+  }
+
   const lista = emprestimos
     .filter((e) => {
       if (filtro === "ativos") return !e.devolvido;
       if (filtro === "devolvidos") return e.devolvido;
       if (filtro === "atrasados") return !e.devolvido && statusOf(e) === "atrasado";
+      if (filtro === "devedores") {
+        const multa = calcularMulta(e, livroById(e.livroId), config);
+        return Math.max(0, (e.valorCombinado || 0) + multa - totalPago(e)) > 0;
+      }
       return true;
     })
     .sort((a, b) => {
+      if (filtro === "devedores") {
+        const restanteA = Math.max(0, (a.valorCombinado || 0) + calcularMulta(a, livroById(a.livroId), config) - totalPago(a));
+        const restanteB = Math.max(0, (b.valorCombinado || 0) + calcularMulta(b, livroById(b.livroId), config) - totalPago(b));
+        return restanteB - restanteA;
+      }
       const pa = statusOf(a) === "atrasado" ? 0 : 1;
       const pb = statusOf(b) === "atrasado" ? 0 : 1;
       return pa - pb;
     });
 
   const qtdAtrasados = emprestimos.filter((e) => !e.devolvido && statusOf(e) === "atrasado").length;
+
+  // débito de cada empréstimo, indiferente de já devolvido ou não — quem devolveu o livro mas
+  // ainda deve fica igual de visível aqui quanto quem está com o livro em mãos
+  const restanteDe = (e) => Math.max(0, (e.valorCombinado || 0) + calcularMulta(e, livroById(e.livroId), config) - totalPago(e));
+  const emprestimosComDebito = emprestimos.filter((e) => restanteDe(e) > 0);
+  const qtdDevedores = new Set(emprestimosComDebito.map((e) => e.pessoaId)).size;
+  const totalDevido = emprestimosComDebito.reduce((soma, e) => soma + restanteDe(e), 0);
 
   return (
     <div>
@@ -206,8 +238,26 @@ function EmprestimosTab({
             ⚠️ {qtdAtrasados} empréstimo(s) atrasado(s) — clique pra filtrar só eles.
           </div>
         )}
+        {qtdDevedores > 0 && (
+          <div
+            onClick={() => setFiltro("devedores")}
+            style={{
+              background: "#F7E3DA",
+              border: `1.5px solid ${COLORS.rust}`,
+              borderRadius: 8,
+              padding: "10px 14px",
+              marginBottom: 14,
+              fontSize: 13,
+              color: COLORS.rust,
+              fontWeight: 600,
+              cursor: "pointer",
+            }}
+          >
+            💰 {qtdDevedores} pessoa(s) devendo, total de {fmtMoney(totalDevido)} — clique pra ver só quem deve.
+          </div>
+        )}
         <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
-          {["ativos", "atrasados", "devolvidos", "todos"].map((f) => (
+          {["ativos", "atrasados", "devedores", "devolvidos", "todos"].map((f) => (
             <button
               key={f}
               onClick={() => setFiltro(f)}
@@ -372,7 +422,15 @@ function EmprestimosTab({
           </div>
         )}
 
-        {lista.length === 0 && <EmptyState text="Nada por aqui ainda. Registre o primeiro empréstimo acima." />}
+        {lista.length === 0 && (
+          <EmptyState
+            text={
+              filtro === "devedores"
+                ? "Ninguém devendo no momento. 🎉"
+                : "Nada por aqui ainda. Registre o primeiro empréstimo acima."
+            }
+          />
+        )}
 
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           {lista.map((emp) => {
@@ -515,6 +573,12 @@ function EmprestimosTab({
                         onConfirmar={(desconto) => onDevolver(emp.id, desconto)}
                       />
                     )}
+                    {!emp.devolvido && (
+                      <BotaoPerdidoDanificado
+                        custoSugerido={livro && livro.valorReposicao ? livro.valorReposicao : 0}
+                        onConfirmar={(tipo, custo) => onMarcarPerdidoDanificado(emp.id, tipo, custo)}
+                      />
+                    )}
                   </div>
 
                   {pessoa && pessoa.telefone && (
@@ -566,9 +630,25 @@ function EmprestimosTab({
                       Cadastre o celular {pessoa ? "de " + pessoa.nome : "dessa pessoa"} na aba Pessoas pra poder cobrar por WhatsApp.
                     </div>
                   )}
-                  {emp.devolvido && (
+                  {emp.devolvido && emp.statusFinal && (
+                    <div style={{ fontSize: 12, color: COLORS.rust, marginBottom: 8 }}>
+                      📦 marcado como {emp.statusFinal} em {fmtDate(emp.dataDevolucao)}
+                      {emp.custoReposicao > 0 ? ` · custo de reposição: ${fmtMoney(emp.custoReposicao)}` : ""}
+                    </div>
+                  )}
+                  {emp.devolvido && !emp.statusFinal && (
                     <div style={{ fontSize: 12, color: COLORS.inkSoft, marginBottom: 8 }}>
                       devolvido em {fmtDate(emp.dataDevolucao)}
+                    </div>
+                  )}
+
+                  {pessoa && pessoa.telefone && restante === 0 && pago > 0 && (
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+                      <a href={linkWhatsApp(pessoa.telefone, mensagemRecibo(emp, livro, pessoa))} target="_blank" rel="noreferrer">
+                        <Button variant="whats" style={{ padding: "7px 12px", fontSize: 13 }}>
+                          🧾 Enviar comprovante
+                        </Button>
+                      </a>
                     </div>
                   )}
 
