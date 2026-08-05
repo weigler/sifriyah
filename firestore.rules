@@ -1,0 +1,28 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // dados da biblioteca (livros, pessoas, empréstimos, ajustes) — já chegam
+    // criptografados aqui; a senha do app é a proteção real, não esta regra
+    match /sifriyah/{docId} {
+      allow read, write: if true;
+    }
+    // backups — mesma lógica, mesmos dados criptografados
+    match /sifriyah_backups/{backupId} {
+      allow read, write: if true;
+    }
+    // vitrine pública do catálogo — é feita pra qualquer um ver mesmo
+    match /sifriyah_publico/{docId} {
+      allow read, write: if true;
+    }
+    // pré-cadastros da vitrine — nome/telefone/e-mail de quem se inscreveu
+    match /sifriyah_precadastros/{id} {
+      allow read, write: if true;
+    }
+
+    // pedidos de "entrar na fila" vindos da vitrine
+    match /sifriyah_pedidos_fila/{id} {
+      allow create: if true;
+      allow read, update, delete: if request.auth != null;
+    }
+  }
+}

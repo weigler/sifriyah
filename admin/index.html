@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Sifriyah</title>
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="icon" href="icon-192.png">
+<meta name="theme-color" content="#4E1C28">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Sifriyah">
+<style>html,body,#root{margin:0;padding:0;min-height:100vh;}</style>
+</head>
+<body>
+<div id="root">Carregando…</div>
+
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+
+<script>
+  // Busca cada pedaço do app (em ordem), junta tudo num texto só, compila com o Babel
+  // (igual sempre foi feito) e executa. Dividir em vários arquivos é só pra organizar o
+  // código-fonte — o navegador continua rodando exatamente como antes, sem build nenhum.
+  var arquivos = [
+    "src/utils.jsx",
+    "src/crypto.jsx",
+    "src/firebase-config.jsx",
+    "src/firebase.jsx",
+    "src/dados.jsx",
+    "src/ui-kit.jsx",
+    "src/App.jsx",
+    "src/EmprestimosTab.jsx",
+    "src/AcervoTab.jsx",
+    "src/CategoriasTab.jsx",
+    "src/PessoasTab.jsx",
+    "src/FilaPedidosTab.jsx",
+    "src/FinanceiroTab.jsx",
+    "src/AjustesTab.jsx",
+    "src/TelaSenha.jsx"
+  ];
+
+  Promise.all(
+    arquivos.map(function (caminho) {
+      return fetch(caminho).then(function (resp) {
+        if (!resp.ok) throw new Error("Não consegui carregar " + caminho + " (HTTP " + resp.status + ")");
+        return resp.text();
+      });
+    })
+  )
+    .then(function (partes) {
+      var src =
+        partes.join("\n\n") +
+        "\n\nconst root = ReactDOM.createRoot(document.getElementById('root'));\nroot.render(<App />);\n";
+      var compilado = Babel.transform(src, {
+        presets: [["react", { runtime: "classic" }]]
+      }).code;
+      (0, eval)(compilado);
+    })
+    .catch(function (err) {
+      document.getElementById("root").innerHTML =
+        "<div style='padding:24px;font-family:sans-serif;color:#6B2737'>" +
+        "<b>Erro ao carregar o Sifriyah:</b><br>" + (err && err.message ? err.message : err) +
+        "</div>";
+      console.error(err);
+    });
+</script>
+</body>
+</html>
